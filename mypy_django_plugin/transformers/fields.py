@@ -75,7 +75,7 @@ def fill_descriptor_types_for_related_field(ctx: FunctionContext, django_context
         # __get__/__set__ of ForeignKey of derived model
         for model_cls in django_context.all_registered_model_classes:
             if issubclass(model_cls, current_model_cls) and not model_cls._meta.abstract:
-                derived_model_info = helpers.lookup_class_typeinfo(helpers.get_typechecker_api(ctx), model_cls)
+                derived_model_info = django_context.lookup_model_typeinfo(helpers.get_typechecker_api(ctx), model_cls)
                 if derived_model_info is not None:
                     fk_ref_type = Instance(derived_model_info, [])
                     derived_fk_type = reparametrize_related_field_type(
@@ -90,7 +90,7 @@ def fill_descriptor_types_for_related_field(ctx: FunctionContext, django_context
 
     typechecker_api = helpers.get_typechecker_api(ctx)
 
-    related_model_info = helpers.lookup_class_typeinfo(typechecker_api, related_model)
+    related_model_info = django_context.lookup_model_typeinfo(typechecker_api, related_model)
     related_model_type: ProperType
     if related_model_info is None:
         # maybe no type stub
@@ -98,7 +98,7 @@ def fill_descriptor_types_for_related_field(ctx: FunctionContext, django_context
     else:
         related_model_type = Instance(related_model_info, [])
 
-    related_model_to_set_info = helpers.lookup_class_typeinfo(typechecker_api, related_model_to_set)
+    related_model_to_set_info = django_context.lookup_model_typeinfo(typechecker_api, related_model_to_set)
     related_model_to_set_type: ProperType
     if related_model_to_set_info is None:
         # maybe no type stub

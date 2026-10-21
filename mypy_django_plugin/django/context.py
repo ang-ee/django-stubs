@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from mypy.checker import TypeChecker
     from mypy.nodes import TypeInfo
     from mypy.plugin import MethodContext
+    from mypy.semanal import SemanticAnalyzer
 
 
 @contextmanager
@@ -133,6 +134,13 @@ class DjangoContext:
                     modules[model_cls.__module__][model_cls.__name__] = model_cls
         return modules
 
+    def get_model_fullname(self, model_cls: type[Model]) -> str:
+        """Return the static class identity for a registered runtime model."""
+        return helpers.get_class_fullname(model_cls)
+
+    def lookup_model_typeinfo(self, api: TypeChecker | SemanticAnalyzer, model_cls: type[Model]) -> TypeInfo | None:
+        return helpers.lookup_fully_qualified_typeinfo(api, self.get_model_fullname(model_cls))
+
     def get_model_class_by_fullname(self, fullname: str) -> type[Model] | None:
         """Returns None if Model is abstract"""
         module, _, model_cls_name = fullname.rpartition(".")
@@ -163,7 +171,7 @@ class DjangoContext:
     def get_field_lookup_exact_type(self, api: TypeChecker, field: _AnyField) -> MypyType:
         if isinstance(field, RelatedField | ForeignObjectRel):
             related_model_cls = self.get_field_related_model_cls(field)
-            rel_model_info = helpers.lookup_class_typeinfo(api, related_model_cls)
+            rel_model_info = self.lookup_model_typeinfo(api, related_model_cls)
             if rel_model_info is None:
                 return AnyType(TypeOfAny.explicit)
 
@@ -208,7 +216,7 @@ class DjangoContext:
             field_set_type = self.get_field_set_type(api, primary_key_field, method=method)
             expected_types["pk"] = field_set_type
 
-        model_info = helpers.lookup_class_typeinfo(api, model_cls)
+        model_info = self.lookup_model_typeinfo(api, model_cls)
         for field in model_cls._meta.get_fields():
             if contenttypes_in_apps:
                 from django.contrib.contenttypes.fields import GenericForeignKey
@@ -259,7 +267,7 @@ class DjangoContext:
                     if related_model._meta.proxy_for_model is not None:
                         related_model = related_model._meta.proxy_for_model
 
-                    related_model_info = helpers.lookup_class_typeinfo(api, related_model)
+                    related_model_info = self.lookup_model_typeinfo(api, related_model)
                     if related_model_info is None:
                         expected_types[field_name] = AnyType(TypeOfAny.unannotated)
                         continue
@@ -289,7 +297,7 @@ class DjangoContext:
     @cached_property
     def _model_class_fullnames_by_label_lower(self) -> Mapping[str, str]:
         return {
-            klass._meta.label_lower: helpers.get_class_fullname(klass)
+            klass._meta.label_lower: self.get_model_fullname(klass)
             for klass in self.all_registered_model_classes
             if klass is not models.Model
         }
@@ -360,13 +368,13 @@ class DjangoContext:
         is_nullable = self.get_field_nullability(field, method)
         if isinstance(field, RelatedField):
             related_model_cls = self.get_field_related_model_cls(field)
-            rel_model_info = helpers.lookup_class_typeinfo(api, related_model_cls)
+            rel_model_info = self.lookup_model_typeinfo(api, related_model_cls)
 
             if method in ("values", "values_list"):
                 primary_key_field = self.get_primary_key_field(related_model_cls)
                 return self.get_field_get_type(api, rel_model_info, primary_key_field, method=method)
 
-            model_info = helpers.lookup_class_typeinfo(api, related_model_cls)
+            model_info = self.lookup_model_typeinfo(api, related_model_cls)
             if model_info is None:
                 return AnyType(TypeOfAny.unannotated)
 

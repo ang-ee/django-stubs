@@ -117,7 +117,7 @@ def get_field_type_from_lookup(
         lookup_field = django_context.get_primary_key_field(model_cls)
 
     api = helpers.get_typechecker_api(ctx)
-    model_info = helpers.lookup_class_typeinfo(api, model_cls)
+    model_info = django_context.lookup_model_typeinfo(api, model_cls)
     return django_context.get_field_get_type(api, model_info, lookup_field, method=method)
 
 
@@ -135,7 +135,7 @@ def get_values_list_row_type(
         return AnyType(TypeOfAny.from_error)
 
     typechecker_api = helpers.get_typechecker_api(ctx)
-    model_info = helpers.lookup_class_typeinfo(typechecker_api, model_cls)
+    model_info = django_context.lookup_model_typeinfo(typechecker_api, model_cls)
     if len(field_lookups) == 0:
         if flat:
             primary_key_field = django_context.get_primary_key_field(model_cls)
@@ -943,7 +943,7 @@ def extract_prefetch_related_annotations(ctx: MethodContext, django_context: Dja
         elif lookup:
             try:
                 observed_model_cls = django_context.resolve_lookup_into_field(qs_model.cls, lookup)[1]
-                if model_info := helpers.lookup_class_typeinfo(api, observed_model_cls):
+                if model_info := django_context.lookup_model_typeinfo(api, observed_model_cls):
                     elem_model = Instance(model_info, [])
             except (FieldError, LookupsAreUnsupported):
                 pass
