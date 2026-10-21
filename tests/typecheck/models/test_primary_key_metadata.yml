@@ -1,0 +1,25 @@
+- case: primary_key_helpers_accept_concrete_and_parent_metadata
+  main: |
+    from typing import Any
+    from typing_extensions import assert_type
+    from myapp.models import Child, Parent
+
+    child = Child()
+    assert_type(child._get_pk_val(), Any)
+    child._get_pk_val(Child._meta)
+    child._get_pk_val(Parent._meta)
+    child._get_pk_val(None)
+    child._get_pk_val(1)  # E: Argument 1 to "_get_pk_val" of "Model" has incompatible type "int"; expected "Options[Never] | None"  [arg-type]
+  installed_apps:
+    - myapp
+  files:
+    - path: myapp/__init__.py
+    - path: myapp/models.py
+      content: |
+        from django.db import models
+
+        class Parent(models.Model):
+            id = models.UUIDField(primary_key=True)
+
+        class Child(Parent):
+            title = models.CharField()
