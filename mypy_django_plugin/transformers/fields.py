@@ -5,8 +5,19 @@ from typing import TYPE_CHECKING, NamedTuple, cast
 from django.core.exceptions import FieldDoesNotExist
 from django.db.models.fields import AutoField
 from django.db.models.fields.related import RelatedField
+from mypy.maptype import map_instance_to_supertype
 from mypy.nodes import AssignmentStmt, NameExpr, TypeInfo
-from mypy.types import AnyType, Instance, NoneType, ProperType, TypeOfAny, UninhabitedType, UnionType, get_proper_type
+from mypy.types import (
+    AnyType,
+    Instance,
+    NoneType,
+    ProperType,
+    TypeOfAny,
+    TypeType,
+    UninhabitedType,
+    UnionType,
+    get_proper_type,
+)
 from mypy.types import Type as MypyType
 
 from mypy_django_plugin.exceptions import UnregisteredModelError
@@ -15,7 +26,7 @@ from mypy_django_plugin.transformers import manytomany
 
 if TYPE_CHECKING:
     from django.db.models.options import _AnyField
-    from mypy.plugin import FunctionContext
+    from mypy.plugin import AttributeContext, FunctionContext
 
     from mypy_django_plugin.django.context import DjangoContext
 
@@ -248,3 +259,20 @@ def transform_into_proper_return_type(ctx: FunctionContext, django_context: Djan
         return determine_type_of_array_field(ctx, django_context)
 
     return set_descriptor_types_for_field_callback(ctx, django_context)
+
+
+def related_model_type(ctx: AttributeContext) -> MypyType:
+    """Retain the native forward relation's model when reading its metadata."""
+    field = ctx.type
+    if not isinstance(field, Instance):
+        return ctx.default_attr_type
+    relation_info = next((info for info in field.type.mro if info.fullname == fullnames.FOREIGN_OBJECT_FULLNAME), None)
+    if relation_info is None:
+        return ctx.default_attr_type
+    relation = map_instance_to_supertype(field, relation_info)
+    getter = get_proper_type(relation.args[1])
+    members = [get_proper_type(member) for member in getter.items] if isinstance(getter, UnionType) else [getter]
+    models = [member for member in members if not isinstance(member, NoneType)]
+    if models and all(isinstance(model, Instance) and helpers.is_model_type(model.type) for model in models):
+        return TypeType.make_normalized(UnionType.make_union(models))
+    return ctx.default_attr_type

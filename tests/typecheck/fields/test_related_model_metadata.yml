@@ -1,0 +1,46 @@
+-   case: test_forward_related_model_metadata_retains_model
+    main: |
+        from typing import Any, assert_type
+        from django.db import models
+        from myapp.models import Book, Publisher
+
+        assert_type(Book.publisher.field.related_model, type[Publisher])
+        assert_type(Book.optional_publisher.field.related_model, type[Publisher])
+        assert_type(Book.exclusive_publisher.field.related_model, type[Publisher])
+        assert_type(Book.publisher.field.related_model.objects.get(), Publisher)
+        assert_type(Book.publisher.field.related_model.objects.answer(), int)
+        assert_type(Book.publisher.field.related_model.objects.get().name, str)
+        explicit: models.ForeignKey[Publisher | None, Publisher | None]
+        assert_type(explicit.related_model, type[Publisher])
+        unknown: models.ForeignKey[Any, Any]
+        assert_type(unknown.related_model, type[models.Model])
+        non_model: models.ForeignKey[str, str]
+        assert_type(non_model.related_model, type[models.Model])
+        scalar: models.CharField[str, str]
+        assert_type(scalar.related_model, type[models.Model] | None)
+        # A reverse descriptor identifies the child rows, not the field's parent.
+        assert_type(Publisher.book_set.field.related_model, type[models.Model])
+        assert_type(Publisher().book_set.get(), Book)
+        bad_name: int = Book.publisher.field.related_model.objects.get().name  # E: Incompatible types in assignment (expression has type "str", variable has type "int")  [assignment]
+        Book.publisher.field.related_model.objects.unknown_method()  # E: "PublisherManager" has no attribute "unknown_method"  [attr-defined]
+        Book.publisher.field.related_model.objects.filter(unknown_column=1)  # E: Cannot resolve keyword 'unknown_column' into field. Choices are: book, exclusive_book, id, name, optional_book  [misc]
+    installed_apps:
+        - myapp
+    files:
+        -   path: myapp/__init__.py
+        -   path: myapp/models.py
+            content: |
+                from django.db import models
+
+                class PublisherManager(models.Manager["Publisher"]):
+                    def answer(self) -> int:
+                        return 42
+
+                class Publisher(models.Model):
+                    name = models.CharField(max_length=64)
+                    objects = PublisherManager()
+
+                class Book(models.Model):
+                    publisher = models.ForeignKey(Publisher, on_delete=models.CASCADE)
+                    optional_publisher = models.ForeignKey(Publisher, null=True, on_delete=models.CASCADE, related_name="optional_book")
+                    exclusive_publisher = models.OneToOneField(Publisher, on_delete=models.CASCADE, related_name="exclusive_book")

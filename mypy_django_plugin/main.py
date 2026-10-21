@@ -334,6 +334,9 @@ class NewSemanalDjangoPlugin(Plugin):
         if not info:
             return None
 
+        if attr_name == "related_model" and info.has_base(fullnames.FIELD_FULLNAME):
+            return fields.related_model_type
+
         # Lookup of the '.is_superuser' attribute
         if info.has_base(fullnames.PERMISSION_MIXIN_CLASS_FULLNAME) and attr_name == "is_superuser":
             return partial(set_auth_user_model_boolean_fields, django_context=self.django_context)
