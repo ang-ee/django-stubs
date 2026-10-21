@@ -4,6 +4,7 @@ from collections import deque
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
+from django.core.exceptions import FieldDoesNotExist
 from django.db.models import Model
 from django.db.models.fields import DateField, DateTimeField, Field
 from django.db.models.fields.reverse_related import ForeignObjectRel, ManyToManyRel, OneToOneRel
@@ -274,6 +275,43 @@ class InjectAnyAsBaseForNestedMeta(ModelClassInitializer):
             # Insert TypedModelMeta just before `object` to leverage mypy's class-body semantic analysis.
             meta_node.mro.insert(-1, typed_model_meta_info)
         return None
+
+
+class AllowAbstractFieldRemoval(ModelClassInitializer):
+    """Respect Django's explicit ``field = None`` removal of abstract fields."""
+
+    @override
+    def run_with_model_cls(self, model_cls: type[Model]) -> None:
+        for statement in self.model_classdef.defs.body:
+            if not (
+                isinstance(statement, AssignmentStmt)
+                and isinstance(statement.rvalue, NameExpr)
+                and statement.rvalue.fullname == "builtins.None"
+            ):
+                continue
+            for lvalue in statement.lvalues:
+                if not isinstance(lvalue, NameExpr) or not isinstance(lvalue.node, Var):
+                    continue
+                try:
+                    model_cls._meta.get_field(lvalue.name)
+                except FieldDoesNotExist:
+                    pass
+                else:
+                    continue
+                # The nearest declared owner must be an abstract Django field;
+                # ordinary Python attributes keep normal override checking.
+                for base in self.model_classdef.info.mro[1:]:
+                    if lvalue.name not in base.names:
+                        continue
+                    parent = self.django_context.get_model_class_by_fullname(base.fullname)
+                    if parent is not None and parent._meta.abstract:
+                        try:
+                            field = parent._meta.get_field(lvalue.name)
+                        except FieldDoesNotExist:
+                            break
+                        if isinstance(field, Field):
+                            lvalue.node.allow_incompatible_override = True
+                    break
 
 
 class AddDefaultPrimaryKey(ModelClassInitializer):
@@ -1142,6 +1180,7 @@ def process_model_class(ctx: ClassDefContext, django_context: DjangoContext) -> 
     initializers = [
         AddAnnotateUtilities,
         InjectAnyAsBaseForNestedMeta,
+        AllowAbstractFieldRemoval,
         AddDefaultPrimaryKey,
         AddPrimaryKeyAlias,
         AddRelatedModelsId,
