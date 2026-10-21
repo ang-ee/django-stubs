@@ -1,0 +1,32 @@
+- case: queryset_clone_hooks_keep_concrete_subclass_and_model_row
+  main: |
+    from typing_extensions import Self, assert_type, override
+    from django.db import models
+    from myapp.models import Record
+
+    class RecordQuerySet(models.QuerySet[Record]):
+        @override
+        def _clone(self) -> Self:
+            return super()._clone()
+
+        def marker(self) -> int:
+            return 1
+
+    queryset = RecordQuerySet(model=Record)
+    assert_type(queryset._clone(), RecordQuerySet)
+    assert_type(queryset._chain(), RecordQuerySet)
+    assert_type(queryset._clone().marker(), int)
+    assert_type(queryset._chain().get(), Record)
+    assert_type(queryset._clone().get().title, str)
+    queryset._clone().get().title = object()  # E: Incompatible types in assignment (expression has type "object", variable has type "str | int | Combinable")  [assignment]
+    queryset._chain().missing()  # E: "RecordQuerySet[Record, Record]" has no attribute "missing"  [attr-defined]
+  installed_apps:
+    - myapp
+  files:
+    - path: myapp/__init__.py
+    - path: myapp/models.py
+      content: |
+        from django.db import models
+
+        class Record(models.Model):
+            title = models.CharField()
