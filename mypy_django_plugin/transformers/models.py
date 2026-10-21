@@ -672,7 +672,8 @@ class AddExtraFieldMethods(ModelClassInitializer):
         # get_next_by, get_previous_by for Date, DateTime
         for field in self.django_context.get_model_fields(model_cls):
             if isinstance(field, DateField | DateTimeField) and not field.null:
-                return_type = Instance(self.model_classdef.info, [])
+                assert self.model_classdef.info.self_type is not None
+                self_type = self.model_classdef.info.self_type
                 common.add_method(
                     self.ctx,
                     name=f"get_next_by_{field.attname}",
@@ -684,7 +685,9 @@ class AddExtraFieldMethods(ModelClassInitializer):
                             kind=ARG_STAR2,
                         )
                     ],
-                    return_type=return_type,
+                    return_type=self_type,
+                    self_type=self_type,
+                    tvar_def=self_type,
                 )
                 common.add_method(
                     self.ctx,
@@ -697,7 +700,9 @@ class AddExtraFieldMethods(ModelClassInitializer):
                             kind=ARG_STAR2,
                         )
                     ],
-                    return_type=return_type,
+                    return_type=self_type,
+                    self_type=self_type,
+                    tvar_def=self_type,
                 )
 
 
