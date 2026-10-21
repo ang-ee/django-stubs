@@ -6,6 +6,8 @@
         reveal_type(ExtraField[int, str, bool](bool))  # N: Revealed type is "myapp.models.ExtraField[int, str, bool]"
         reveal_type(FixedField())  # N: Revealed type is "myapp.models.FixedField"
         reveal_type(Record.text.field.marker)  # N: Revealed type is "type[str]"
+        reveal_type(Record().texts)  # N: Revealed type is "list[str]"
+        reveal_type(Record().numbers)  # N: Revealed type is "list[int]"
         reveal_type(Record().text)  # N: Revealed type is "str"
         reveal_type(Record._meta.get_field("text").marker)  # N: Revealed type is "type[str]"
         Record(text="valid")
@@ -20,6 +22,7 @@
             content: |
                 from typing import Any, Generic, TypeVar
                 from django.db import models
+                from django.contrib.postgres.fields import ArrayField
                 T = TypeVar('T')
                 S = TypeVar('S')
                 G = TypeVar('G')
@@ -35,3 +38,5 @@
                 class FixedField(models.Field[int,int]): ...
                 class Record(models.Model):
                     text = OneField(str)
+                    texts = ArrayField(OneField[str](str))
+                    numbers = ArrayField(FixedField())

@@ -61,11 +61,13 @@ def _get_current_field_from_assignment(ctx: FunctionContext, django_context: Dja
 
 
 def reparametrize_related_field_type(related_field_type: Instance, set_type: MypyType, get_type: MypyType) -> Instance:
-    args = [
-        helpers.convert_any_to_type(related_field_type.args[0], set_type),
-        helpers.convert_any_to_type(related_field_type.args[1], get_type),
-    ]
-    return related_field_type.copy_modified(args=args)
+    mapped = helpers.get_field_type_args(related_field_type)
+    assert mapped is not None
+    return reparametrize_field_type(
+        related_field_type,
+        helpers.convert_any_to_type(mapped.set, set_type),
+        helpers.convert_any_to_type(mapped.get, get_type),
+    )
 
 
 def fill_descriptor_types_for_related_field(ctx: FunctionContext, django_context: DjangoContext) -> MypyType:
@@ -187,8 +189,12 @@ def set_descriptor_types_for_field(
                 ctx.context,
             )
 
-    # Descriptor parameters belong to Field, not necessarily this subclass.
-    generic_field = fill_typevars(default_return_type.type)
+    return reparametrize_field_type(default_return_type, set_type, get_type)
+
+
+def reparametrize_field_type(field_type: Instance, set_type: MypyType, get_type: MypyType) -> Instance:
+    """Map descriptor types back through the field subclass's declared generics."""
+    generic_field = fill_typevars(field_type.type)
     assert isinstance(generic_field, Instance)
     field_info = next(base for base in generic_field.type.mro if base.fullname == fullnames.FIELD_FULLNAME)
     template = map_instance_to_supertype(generic_field, field_info)
@@ -196,11 +202,11 @@ def set_descriptor_types_for_field(
         generic_field.type.defn.type_vars, template, Instance(field_info, [set_type, get_type])
     )
     descriptor_vars = {variable.id for variable in get_type_vars(template)}
-    return default_return_type.copy_modified(
+    return field_type.copy_modified(
         args=[
             original if variable.id not in descriptor_vars or value is None else value
             for variable, original, value in zip(
-                generic_field.type.defn.type_vars, default_return_type.args, inferred, strict=True
+                generic_field.type.defn.type_vars, field_type.args, inferred, strict=True
             )
         ]
     )
@@ -238,10 +244,12 @@ def determine_type_of_array_field(ctx: FunctionContext, django_context: DjangoCo
 
         return _type
 
-    # Both base_field and return type should derive from Field and thus expect 2 arguments
-    assert len(base_field_arg_type.args) == len(default_return_type.args) == 2
+    base_types = helpers.get_field_type_args(base_field_arg_type)
+    array_types = helpers.get_field_type_args(default_return_type)
+    assert base_types is not None and array_types is not None
     args = []
-    for new_type, default_arg in zip(base_field_arg_type.args, default_return_type.args, strict=False):
+    new_type: MypyType
+    for new_type, default_arg in zip(base_types, array_types, strict=True):
         # Drop any base_field Combinable type
         reduced = drop_combinable(new_type)
         if reduced is None:
@@ -254,7 +262,7 @@ def determine_type_of_array_field(ctx: FunctionContext, django_context: DjangoCo
 
         args.append(helpers.convert_any_to_type(default_arg, new_type))
 
-    return default_return_type.copy_modified(args=args)
+    return reparametrize_field_type(default_return_type, args[0], args[1])
 
 
 def transform_into_proper_return_type(ctx: FunctionContext, django_context: DjangoContext) -> MypyType:
