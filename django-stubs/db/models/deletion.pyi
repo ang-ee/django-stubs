@@ -5,9 +5,13 @@ from typing import Any
 from django.db import IntegrityError
 from django.db.models.base import Model
 from django.db.models.fields import Field
+from django.db.models.fields.reverse_related import ForeignObjectRel
 from django.db.models.options import Options
 from django.db.models.query import QuerySet
 from django.utils.datastructures import _IndexableCollection
+from typing_extensions import TypeVar
+
+_M = TypeVar("_M", bound=Model)
 
 def CASCADE(
     collector: Collector,
@@ -46,15 +50,15 @@ def RESTRICT(
     using: str,
 ) -> None: ...
 def SET(value: Any) -> Callable[..., Any]: ...
-def get_candidate_relations_to_delete(opts: Options[Model]) -> Iterable[Field[Any, Any]]: ...
+def get_candidate_relations_to_delete(opts: Options[_M]) -> Iterable[ForeignObjectRel]: ...
 
 class ProtectedError(IntegrityError):
-    protected_objects: set[Model]
-    def __init__(self, msg: str, protected_objects: set[Model]) -> None: ...
+    protected_objects: Iterable[Model]
+    def __init__(self, msg: str, protected_objects: Iterable[Model]) -> None: ...
 
 class RestrictedError(IntegrityError):
-    restricted_objects: set[Model]
-    def __init__(self, msg: str, restricted_objects: set[Model]) -> None: ...
+    restricted_objects: Iterable[Model]
+    def __init__(self, msg: str, restricted_objects: Iterable[Model]) -> None: ...
 
 class Collector:
     using: str
