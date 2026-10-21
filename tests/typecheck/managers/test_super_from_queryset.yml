@@ -1,0 +1,56 @@
+-   case: test_super_resolves_methods_copied_from_a_queryset
+    main: |
+        from typing import assert_type
+        from myapp.models import OtherRecord, Record
+        assert_type(Record.objects.create(title="valid"), Record)
+        assert_type(Record.objects.create(title="valid").title, str)
+        assert_type(Record.objects.create_explicit(title="valid"), Record)
+        assert_type(OtherRecord.objects.create(title="valid"), OtherRecord)
+        assert_type(OtherRecord.objects.create(title="valid").title, str)
+        wrong: int = Record.objects.create(title="valid").title  # E: Incompatible types in assignment (expression has type "str", variable has type "int")  [assignment]
+        Record.objects.unknown_method()  # E: "RecordManager" has no attribute "unknown_method"  [attr-defined]
+    installed_apps:
+        - myapp
+    files:
+        -   path: myapp/__init__.py
+        -   path: myapp/models.py
+            content: |
+                from typing import Generic, TypeVar, assert_type
+                from django.db import models
+                from typing_extensions import override
+
+                T = TypeVar("T", bound=models.Model)
+
+                class RecordQuerySet(models.QuerySet[T]):
+                    @override
+                    def create(self, **kwargs: object) -> T:
+                        return super().create(**kwargs)
+
+                _BaseManager = models.Manager.from_queryset(RecordQuerySet)
+
+                class RecordManager(_BaseManager["Record"]):
+                    @override
+                    def create(self, **kwargs: object) -> "Record":
+                        row = super().create(**kwargs)
+                        assert_type(row, Record)
+                        return row
+
+                    def create_explicit(self, **kwargs: object) -> "Record":
+                        row = super(RecordManager, self).create(**kwargs)
+                        assert_type(row, Record)
+                        return row
+
+                class GenericManager(_BaseManager[T], Generic[T]):
+                    @override
+                    def create(self, **kwargs: object) -> T:
+                        row = super().create(**kwargs)
+                        assert_type(row, T)
+                        return row
+
+                class OtherRecord(models.Model):
+                    title = models.CharField(max_length=64)
+                    objects = GenericManager["OtherRecord"]()
+
+                class Record(models.Model):
+                    title = models.CharField(max_length=64)
+                    objects = RecordManager()

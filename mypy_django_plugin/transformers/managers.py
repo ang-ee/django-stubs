@@ -15,6 +15,7 @@ from mypy.nodes import (
     PlaceholderNode,
     RefExpr,
     StrExpr,
+    SuperExpr,
     SymbolTableNode,
     TypeInfo,
 )
@@ -58,13 +59,14 @@ MANAGER_METHODS_RETURNING_QUERYSET: Final = frozenset(
 
 
 def get_method_type_from_dynamic_manager(
-    api: TypeChecker, method_name: str, manager_instance: Instance
+    api: TypeChecker, method_name: str, manager_instance: Instance, manager_type_info: TypeInfo | None = None
 ) -> ProperType | None:
     """
     Attempt to resolve a method on a manager that was built from '.from_queryset'
     """
 
-    manager_type_info = manager_instance.type.get_containing_type_info(method_name)
+    if manager_type_info is None:
+        manager_type_info = manager_instance.type.get_containing_type_info(method_name)
 
     if (
         manager_type_info is None
@@ -105,13 +107,15 @@ def _get_funcdef_type(definition: Node | None) -> ProperType | None:
     return None
 
 
-def resolve_manager_method_from_instance(instance: Instance, method_name: str, ctx: AttributeContext) -> MypyType:
+def resolve_manager_method_from_instance(
+    instance: Instance, method_name: str, ctx: AttributeContext, manager_type_info: TypeInfo | None = None
+) -> MypyType:
     api = helpers.get_typechecker_api(ctx)
-    method_type = get_method_type_from_dynamic_manager(api, method_name, instance)
+    method_type = get_method_type_from_dynamic_manager(api, method_name, instance, manager_type_info)
     return method_type if method_type is not None else ctx.default_attr_type
 
 
-def resolve_manager_method(ctx: AttributeContext) -> MypyType:
+def resolve_manager_method(ctx: AttributeContext, *, method_name: str, manager_type_info: TypeInfo) -> MypyType:
     """
     A 'get_attribute_hook' that is intended to be invoked whenever the TypeChecker encounters
     an attribute on a class that has 'django.db.models.BaseManager' as a base.
@@ -123,21 +127,19 @@ def resolve_manager_method(ctx: AttributeContext) -> MypyType:
     if default_attr_type.type_of_any != TypeOfAny.implementation_artifact:
         return ctx.default_attr_type
 
-    # (Current state is:) We wouldn't end up here when looking up a method from a custom _manager_.
-    # That's why we only attempt to lookup the method for either a dynamically added or reverse manager.
-    if isinstance(ctx.context, MemberExpr):
-        method_name = ctx.context.name
-    elif isinstance(ctx.context, CallExpr) and isinstance(ctx.context.callee, MemberExpr):
-        method_name = ctx.context.callee.name
-    else:
-        ctx.api.fail("Unable to resolve return type of queryset/manager method", ctx.context)
-        return AnyType(TypeOfAny.from_error)
-
+    # A super access selects a base symbol even though ctx.type is the child
+    # instance. Other accesses (including unions) resolve each receiver's own
+    # generated manager rather than sharing the hook's first selected owner.
+    selected_manager = manager_type_info if isinstance(ctx.context, SuperExpr) else None
     if isinstance(ctx.type, Instance):
-        return resolve_manager_method_from_instance(instance=ctx.type, method_name=method_name, ctx=ctx)
+        return resolve_manager_method_from_instance(
+            instance=ctx.type, method_name=method_name, ctx=ctx, manager_type_info=selected_manager
+        )
     if isinstance(ctx.type, UnionType) and all(isinstance(get_proper_type(item), Instance) for item in ctx.type.items):
         resolved = tuple(
-            resolve_manager_method_from_instance(instance=instance, method_name=method_name, ctx=ctx)
+            resolve_manager_method_from_instance(
+                instance=instance, method_name=method_name, ctx=ctx, manager_type_info=selected_manager
+            )
             for item in ctx.type.items
             if isinstance((instance := get_proper_type(item)), Instance)
         )

@@ -358,7 +358,7 @@ class NewSemanalDjangoPlugin(Plugin):
         if info.has_base(
             fullnames.BASE_MANAGER_CLASS_FULLNAME
         ) and "from_queryset_manager" in helpers.get_django_metadata(info):
-            return resolve_manager_method
+            return partial(resolve_manager_method, method_name=attr_name, manager_type_info=info)
 
         if info.has_base(fullnames.STR_PROMISE_FULLNAME):
             return resolve_str_promise_attribute
