@@ -11,11 +11,18 @@ from mypy import build as mypy_build  # noqa: F401 -- initialize mypy's compiled
 from mypy.nodes import Block, ClassDef, NameExpr, SymbolTable, TypeInfo
 from mypy.plugin import ClassDefContext
 
-from mypy_django_plugin.transformers.models import AddDefaultManagerAttribute
+from mypy_django_plugin.transformers.models import (
+    AddBaseManagerAttribute,
+    AddDefaultManagerAttribute,
+    AddManagerAttribute,
+)
 
 
+@pytest.mark.parametrize("initializer_type", [AddDefaultManagerAttribute, AddBaseManagerAttribute])
 @pytest.mark.parametrize(("abstract", "explicit_manager"), [(True, False), (True, True), (False, False)])
-def test_default_manager_initializer_uses_only_existing_managers(abstract: bool, explicit_manager: bool) -> None:
+def test_default_manager_initializer_uses_only_existing_managers(
+    abstract: bool, explicit_manager: bool, initializer_type: type[AddManagerAttribute]
+) -> None:
     with mock.patch.dict(os.environ, {"DJANGO_SETTINGS_MODULE": "scripts.django_tests_settings"}):
         django.setup()
     with isolate_apps():
@@ -30,7 +37,7 @@ def test_default_manager_initializer_uses_only_existing_managers(abstract: bool,
         )
         classdef = ClassDef("Example", Block([]))
         classdef.info = TypeInfo(SymbolTable(), classdef, "initializer")
-        initializer = AddDefaultManagerAttribute(ClassDefContext(classdef, NameExpr("Model"), mock.Mock()), mock.Mock())
+        initializer = initializer_type(ClassDefContext(classdef, NameExpr("Model"), mock.Mock()), mock.Mock())
         with (
             mock.patch.object(initializer, "lookup_typeinfo_or_incomplete_defn_error") as lookup,
             mock.patch.object(initializer, "add_new_var_to_model_class") as add_var,
@@ -38,12 +45,17 @@ def test_default_manager_initializer_uses_only_existing_managers(abstract: bool,
         ):
             initializer.run_with_model_cls(model)
 
-        if abstract and not explicit_manager:
+        if abstract and not explicit_manager and initializer_type is AddDefaultManagerAttribute:
             assert model._meta.default_manager is None
             lookup.assert_not_called()
             add_var.assert_not_called()
         else:
-            assert isinstance(model._meta.default_manager, models.Manager)
+            manager = (
+                model._meta.default_manager
+                if initializer_type is AddDefaultManagerAttribute
+                else model._meta.base_manager
+            )
+            assert isinstance(manager, models.Manager)
             lookup.assert_called_once_with("django.db.models.manager.Manager")
             assert fill_manager.call_args.args[1].type is classdef.info
-            add_var.assert_called_once_with("_default_manager", fill_manager.return_value, is_classvar=True)
+            add_var.assert_called_once_with(initializer.manager_name, fill_manager.return_value, is_classvar=True)

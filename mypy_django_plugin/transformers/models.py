@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from django.db.models import Model
 from django.db.models.fields import DateField, DateTimeField, Field
@@ -481,34 +481,46 @@ class AddManagers(ModelClassInitializer):
         return create_manager_info_from_from_queryset_call(self.api, expr.callee)
 
 
-class AddDefaultManagerAttribute(ModelClassInitializer):
+class AddManagerAttribute(ModelClassInitializer):
+    manager_name: ClassVar[Literal["_default_manager", "_base_manager"]]
+
     @override
     def run_with_model_cls(self, model_cls: type[Model]) -> None:
-        if "_default_manager" in self.model_classdef.info.names:
+        if self.manager_name in self.model_classdef.info.names:
             return None
 
-        default_manager = model_cls._meta.default_manager
-        if default_manager is None and model_cls._meta.abstract:
+        manager = (
+            model_cls._meta.default_manager if self.manager_name == "_default_manager" else model_cls._meta.base_manager
+        )
+        if manager is None and model_cls._meta.abstract:
             return
-        default_manager_cls = default_manager.__class__
-        default_manager_fullname = helpers.get_class_fullname(default_manager_cls)
+        manager_cls = manager.__class__
+        manager_fullname = helpers.get_class_fullname(manager_cls)
 
         try:
-            default_manager_info = self.lookup_typeinfo_or_incomplete_defn_error(default_manager_fullname)
+            manager_info = self.lookup_typeinfo_or_incomplete_defn_error(manager_fullname)
         except helpers.IncompleteDefnException as exc:
-            # Check if default manager could be a generated manager
-            base_manager_fullname = helpers.get_class_fullname(default_manager_cls.__bases__[0])
-            generated_manager_info = self.get_generated_manager_info(default_manager_fullname, base_manager_fullname)
+            # Check if the manager could be a generated manager
+            base_manager_fullname = helpers.get_class_fullname(manager_cls.__bases__[0])
+            generated_manager_info = self.get_generated_manager_info(manager_fullname, base_manager_fullname)
             if generated_manager_info is None:
                 # Manager doesn't appear to be generated. Unless we're on the final round,
-                # see if another round could help figuring out the default manager type
+                # see if another round could help figuring out the manager type
                 if not self.api.final_iteration:
                     raise exc
                 return None
-            default_manager_info = generated_manager_info
+            manager_info = generated_manager_info
 
-        default_manager_type = helpers.fill_manager(default_manager_info, Instance(self.model_classdef.info, []))
-        self.add_new_var_to_model_class("_default_manager", default_manager_type, is_classvar=True)
+        manager_type = helpers.fill_manager(manager_info, Instance(self.model_classdef.info, []))
+        self.add_new_var_to_model_class(self.manager_name, manager_type, is_classvar=True)
+
+
+class AddDefaultManagerAttribute(AddManagerAttribute):
+    manager_name = "_default_manager"
+
+
+class AddBaseManagerAttribute(AddManagerAttribute):
+    manager_name = "_base_manager"
 
 
 class AddReverseLookups(ModelClassInitializer):
@@ -1100,6 +1112,7 @@ def process_model_class(ctx: ClassDefContext, django_context: DjangoContext) -> 
         AddRelatedModelsId,
         AddManagers,
         AddDefaultManagerAttribute,
+        AddBaseManagerAttribute,
         AddReverseLookups,
         AddExtraFieldMethods,
         ProcessManyToManyFields,
