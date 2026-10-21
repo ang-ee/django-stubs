@@ -108,6 +108,33 @@ class ModelClassInitializer:
     def add_new_class_for_current_module(self, name: str, bases: list[Instance]) -> TypeInfo:
         return helpers.add_new_class_for_module(self.current_module, name=name, bases=bases)
 
+    def inherited_manager_matches(self, name: str, manager_info: TypeInfo) -> bool:
+        """Reuse a native Self slot only when every inherited branch agrees with Django."""
+        if name in self.model_classdef.info.names:
+            return False
+        symbols = [self.model_classdef.info.get(name)]
+        symbols.extend(base.type.get(name) for base in self.model_classdef.info.bases)
+        for index, symbol in enumerate(symbols):
+            if symbol is None:
+                if index == 0:
+                    return False
+                continue
+            if not isinstance(symbol.node, Var) or symbol.type is None:
+                return False
+            typ = get_proper_type(symbol.type)
+            if not (
+                isinstance(typ, Instance)
+                and typ.type in manager_info.mro
+                and symbol.node.info.self_type is not None
+                and typ.args == (symbol.node.info.self_type,)
+            ):
+                return False
+            # The selected slot must already have Django's exact manager type;
+            # other branches may expose its broader native manager base class.
+            if index == 0 and typ.type is not manager_info:
+                return False
+        return True
+
     def run(self) -> None:
         model_cls = self.django_context.get_model_class_by_fullname(self.model_classdef.fullname)
         if model_cls is None:
@@ -439,6 +466,9 @@ class AddManagers(ModelClassInitializer):
                 self.reparametrize_dynamically_created_manager(manager_name, manager_info)
                 continue
 
+            if manager_info is not None and self.inherited_manager_matches(manager_name, manager_info):
+                continue
+
             if manager_info is None:
                 # We couldn't find a manager type, see if we should create one
                 manager_info = self.try_create_manager_from_from_queryset(manager_name)
@@ -571,6 +601,9 @@ class AddManagerAttribute(ModelClassInitializer):
                     raise exc
                 return None
             manager_info = generated_manager_info
+
+        if self.inherited_manager_matches(self.manager_name, manager_info):
+            return
 
         assert self.model_classdef.info.self_type is not None
         manager_type = helpers.fill_manager(manager_info, self.model_classdef.info.self_type)
