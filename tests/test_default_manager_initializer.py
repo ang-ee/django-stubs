@@ -10,6 +10,7 @@ from django.test.utils import isolate_apps
 from mypy import build as mypy_build  # noqa: F401 -- initialize mypy's compiled import graph
 from mypy.nodes import Block, ClassDef, NameExpr, SymbolTable, TypeInfo
 from mypy.plugin import ClassDefContext
+from mypy.types import AnyType, Instance, TypeOfAny, TypeVarId, TypeVarType
 
 from mypy_django_plugin.transformers.models import (
     AddBaseManagerAttribute,
@@ -37,6 +38,14 @@ def test_default_manager_initializer_uses_only_existing_managers(
         )
         classdef = ClassDef("Example", Block([]))
         classdef.info = TypeInfo(SymbolTable(), classdef, "initializer")
+        classdef.info.self_type = TypeVarType(
+            "Self",
+            "initializer.Example.Self",
+            TypeVarId(0),
+            [],
+            Instance(classdef.info, []),
+            AnyType(TypeOfAny.special_form),
+        )
         initializer = initializer_type(ClassDefContext(classdef, NameExpr("Model"), mock.Mock()), mock.Mock())
         with (
             mock.patch.object(initializer, "lookup_typeinfo_or_incomplete_defn_error") as lookup,
@@ -57,5 +66,5 @@ def test_default_manager_initializer_uses_only_existing_managers(
             )
             assert isinstance(manager, models.Manager)
             lookup.assert_called_once_with("django.db.models.manager.Manager")
-            assert fill_manager.call_args.args[1].type is classdef.info
+            assert fill_manager.call_args.args[1] is classdef.info.self_type
             add_var.assert_called_once_with(initializer.manager_name, fill_manager.return_value, is_classvar=True)

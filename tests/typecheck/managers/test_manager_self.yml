@@ -1,0 +1,29 @@
+- case: base_and_default_manager_rows_preserve_self_in_abstract_model_methods
+  main: |
+    from typing_extensions import assert_type
+    from myapp.models import Child
+
+    assert_type(Child().from_base(), Child)
+    assert_type(Child().from_default(), Child)
+  installed_apps:
+    - myapp
+  files:
+    - path: myapp/__init__.py
+    - path: myapp/models.py
+      content: |
+        from typing_extensions import Self
+        from django.db import models
+
+        class Parent(models.Model):
+            objects = models.Manager()
+            class Meta:
+                abstract = True
+
+            def from_base(self) -> Self:
+                return type(self)._base_manager.get()
+
+            def from_default(self) -> Self:
+                return type(self)._default_manager.get()
+
+        class Child(Parent):
+            title = models.CharField()

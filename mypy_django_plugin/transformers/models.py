@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from django.db.models import Model
 from django.db.models.fields import DateField, DateTimeField, Field
 from django.db.models.fields.reverse_related import ForeignObjectRel, ManyToManyRel, OneToOneRel
+from mypy.expandtype import expand_self_type
 from mypy.nodes import (
     ARG_STAR2,
     MDEF,
@@ -390,8 +391,10 @@ class AddManagers(ModelClassInitializer):
 
             if manager_node and isinstance(manager_node.node, Var):
                 manager_node.node.is_classvar = True
-            if manager_node and manager_node.type is not None and (
-                manager_name in self.model_classdef.info.names or manager_info is None
+            if (
+                manager_node
+                and manager_node.type is not None
+                and (manager_name in self.model_classdef.info.names or manager_info is None)
             ):
                 # Preserve explicit local annotations and unresolved-manager fallbacks.
                 # Inherited slots otherwise use the concrete manager Django resolved.
@@ -514,7 +517,8 @@ class AddManagerAttribute(ModelClassInitializer):
                 return None
             manager_info = generated_manager_info
 
-        manager_type = helpers.fill_manager(manager_info, Instance(self.model_classdef.info, []))
+        assert self.model_classdef.info.self_type is not None
+        manager_type = helpers.fill_manager(manager_info, self.model_classdef.info.self_type)
         self.add_new_var_to_model_class(self.manager_name, manager_type, is_classvar=True)
 
 
@@ -607,6 +611,10 @@ class AddReverseLookups(ModelClassInitializer):
             return
 
         default_manager_type = get_proper_type(default_manager.type)
+        if isinstance(default_manager.node, Var) and default_manager_type is not None:
+            default_manager_type = expand_self_type(
+                default_manager.node, default_manager_type, Instance(to_model_info, [])
+            )
         if (
             # '_default_manager' attribute is a node type we can't process
             not isinstance(default_manager_type, Instance)
@@ -984,6 +992,8 @@ class ProcessManyToManyFields(ModelClassInitializer):
         if default_manager_node is None:
             raise helpers.IncompleteDefnException()
         default_manager_type = get_proper_type(default_manager_node.type)
+        if isinstance(default_manager_node.node, Var) and default_manager_type is not None:
+            default_manager_type = expand_self_type(default_manager_node.node, default_manager_type, model)
         if not isinstance(default_manager_type, Instance):
             return
 
