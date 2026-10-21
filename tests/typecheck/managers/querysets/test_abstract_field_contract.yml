@@ -1,0 +1,65 @@
+-   case: abstract_generator_declared_field_lookup_contracts
+    main: |
+        from django.db.models import QuerySet
+        from myapp.models import Abstract, Other, Target
+
+        def check(rows: QuerySet[Abstract]) -> None:
+            rows.filter(count=1)
+            rows.filter(count__in=[1, 2])
+            rows.filter(count__isnull=True)
+            rows.filter(nullable=None)
+            rows.filter(subject=Target())
+            rows.filter(subject__left_id__in=[1])
+            rows.filter(subject__left_id__isnull=False)
+            rows.filter(target=Target())
+            rows.filter(target=1)
+            rows.filter(target_id=1)
+            rows.filter(target__title="name")
+            wrong_values: list[object] = [object()]
+            rows.filter(count=object())  # E: Incompatible type for lookup 'count': (got "object", expected "str | int")  [misc]
+            rows.filter(count__in=wrong_values)  # E: Incompatible type for lookup 'count__in': (got "list[object]", expected "Iterable[str | int]")  [misc]
+            rows.filter(count__isnull="bad")  # E: Incompatible type for lookup 'count__isnull': (got "str", expected "bool")  [misc]
+            rows.filter(subject__in=3)  # E: Incompatible type for lookup 'subject__in': (got "int", expected "Iterable[Any]")  [misc]
+            rows.filter(subject__isnull="bad")  # E: Incompatible type for lookup 'subject__isnull': (got "str", expected "bool")  [misc]
+            rows.filter(target=Other())  # E: Incompatible type for lookup 'target': (got "Other", expected "Target | int | None")  [misc]
+            rows.filter(target_id="bad")  # E: Incompatible type for lookup 'target_id': (got "str", expected "int")  [misc]
+            rows.filter(target__number=object())  # E: Incompatible type for lookup 'target__number': (got "object", expected "str | int")  [misc]
+            rows.filter(target__misspelled=1)  # E: Cannot resolve keyword 'misspelled' into field. Choices are: id, number, title  [misc]
+            rows.filter(ordinary=1)  # E: Cannot resolve keyword 'ordinary' into field. Choices are:   [misc]
+            rows.filter(attribute=1)  # E: Cannot resolve keyword 'attribute' into field. Choices are:   [misc]
+            rows.filter(unknown=1)  # E: Cannot resolve keyword 'unknown' into field. Choices are:   [misc]
+            rows.filter(count__imaginary__exact=1)  # E: Cannot resolve keyword 'count' into field. Choices are:   [misc]
+    installed_apps:
+        - myapp
+    files:
+        -   path: myapp/__init__.py
+        -   path: myapp/models.py
+            content: |
+                from __future__ import annotations
+                from typing import Any
+                from django.db import models
+
+                class Target(models.Model):
+                    title = models.CharField(max_length=20)
+                    number = models.IntegerField()
+
+                class Other(models.Model):
+                    pass
+
+                class Abstract(models.Model):
+                    count: models.IntegerField[int, int]
+                    nullable: models.IntegerField[int | None, int | None]
+                    subject: models.ForeignKey[Any, Any]
+                    target: models.ForeignKey[Target, Target]
+                    ordinary: int
+                    @property
+                    def attribute(self) -> int:
+                        return 1
+                    class Meta:
+                        abstract = True
+
+                class Concrete(Abstract):
+                    count = models.IntegerField()
+                    nullable = models.IntegerField(null=True)
+                    subject = models.ForeignKey(Target, on_delete=models.CASCADE, related_name="+")
+                    target = models.ForeignKey(Target, on_delete=models.CASCADE, related_name="+")

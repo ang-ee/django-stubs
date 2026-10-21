@@ -17,7 +17,7 @@ from django.db.models.fields.reverse_related import ForeignObjectRel
 from django.db.models.lookups import Exact, In
 from django.db.models.sql.query import Query
 from mypy.typeanal import make_optional_type
-from mypy.types import AnyType, Instance, ProperType, TypeOfAny, UnionType, get_proper_type
+from mypy.types import AnyType, Instance, NoneType, ProperType, TypeOfAny, UnionType, get_proper_type
 from mypy.types import Type as MypyType
 
 from mypy_django_plugin.exceptions import UnregisteredModelError
@@ -547,6 +547,74 @@ class DjangoContext:
         lookup_type = self._resolve_lookup_type_from_lookup_class(ctx, lookup_cls)
         return annotation_type if lookup_type is None else lookup_type
 
+    def _resolve_declared_field_lookup(
+        self,
+        ctx: MethodContext,
+        model_cls: type[Model],
+        lookup: str,
+        model_instance: Instance,
+    ) -> MypyType | None:
+        """Read an abstract generator's explicit Field descriptor contract."""
+        if not model_cls._meta.abstract:
+            return None
+        field_name, *parts = lookup.split(LOOKUP_SEP)
+        field_type = get_field_type_from_model_type_info(model_instance.type, field_name)
+        is_id = False
+        if field_type is None and field_name.endswith("_id"):
+            field_type = get_field_type_from_model_type_info(model_instance.type, field_name[:-3])
+            is_id = field_type is not None and field_type.type.has_base(fullnames.FOREIGN_KEY_FULLNAME)
+            if not is_id:
+                return None
+        if field_type is None:
+            return None
+        mapped = helpers.get_field_type_args(field_type)
+        assert mapped is not None
+        api = helpers.get_typechecker_api(ctx)
+        value_type: MypyType
+        if field_type.type.has_base(fullnames.FOREIGN_KEY_FULLNAME):
+            related = mapped.get
+            if isinstance(related, UnionType):
+                related = get_proper_type(
+                    UnionType.make_union(
+                        [item for item in related.items if not isinstance(get_proper_type(item), NoneType)]
+                    )
+                )
+            if isinstance(related, AnyType):
+                value_type = related
+                if parts and parts[-1] not in Field().get_lookups():
+                    return related
+            elif isinstance(related, Instance) and (target := helpers.DjangoModel.from_model_type(related, self)):
+                if parts and Field().get_lookup(parts[0]) is None and not is_id:
+                    return self.resolve_lookup_expected_type(ctx, target.cls, LOOKUP_SEP.join(parts), target.typ)
+                primary_key_type = self.get_field_get_type(api, target.info, target.cls._meta.pk, method="init")
+                value_type = (
+                    primary_key_type if is_id else make_optional_type(UnionType.make_union([related, primary_key_type]))
+                )
+            else:
+                return None
+        else:
+            # Without a concrete runtime field there is no transform chain to
+            # inspect. Only a direct lookup can use its declared descriptor.
+            if len(parts) > 1:
+                return None
+            value_type = helpers.convert_any_to_type(
+                helpers.get_private_descriptor_type(
+                    field_type.type,
+                    "_pyi_lookup_exact_type",
+                    is_nullable=helpers.is_optional(mapped.get),
+                ),
+                mapped.get,
+            )
+        if not parts:
+            return value_type
+        lookup_cls = Field().get_lookup(parts[-1])
+        if lookup_cls is None:
+            return None
+        if issubclass(lookup_cls, In):
+            return ctx.api.named_generic_type("typing.Iterable", [value_type])
+        expected = self._resolve_lookup_type_from_lookup_class(ctx, lookup_cls)
+        return value_type if expected is None else expected
+
     def resolve_lookup_expected_type(
         self, ctx: MethodContext, model_cls: type[Model], lookup: str, model_instance: Instance
     ) -> MypyType:
@@ -556,6 +624,9 @@ class DjangoContext:
             solved_lookup = self.solve_lookup_type(model_cls, lookup)
         except FieldError as exc:
             # ...so we handle annotation lookups here
+            declared_lookup = self._resolve_declared_field_lookup(ctx, model_cls, lookup, model_instance)
+            if declared_lookup is not None:
+                return declared_lookup
             annotation_lookup = self._resolve_annotated_field_lookup(ctx, lookup, model_instance)
             if annotation_lookup is not None:
                 return annotation_lookup
