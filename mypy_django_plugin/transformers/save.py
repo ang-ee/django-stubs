@@ -33,6 +33,6 @@ def validate_save_update_fields(ctx: MethodContext, django_context: DjangoContex
     for field_arg in update_fields_expr.items:
         field_name = helpers.resolve_string_attribute_value(field_arg, django_context)
         if field_name is not None:
-            validate_non_pk_concrete_field(ctx, django_model.cls, field_name, method)
+            validate_non_pk_concrete_field(ctx, django_model.cls, field_name, method, django_context=django_context)
 
     return ctx.default_return_type

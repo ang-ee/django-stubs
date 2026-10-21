@@ -16,6 +16,7 @@ from django.db.models.fields.related import ForeignKey, RelatedField
 from django.db.models.fields.reverse_related import ForeignObjectRel
 from django.db.models.lookups import Exact, In
 from django.db.models.sql.query import Query
+from mypy.nodes import Var
 from mypy.typeanal import make_optional_type
 from mypy.types import AnyType, Instance, NoneType, ProperType, TypeOfAny, UnionType, get_proper_type
 from mypy.types import Type as MypyType
@@ -209,6 +210,21 @@ class DjangoContext:
                 if field.primary_key:
                     return field
         raise ValueError("No primary key defined")
+
+    def get_model_field(self, api: TypeChecker, model_cls: type[Model], field_name: str) -> _AnyField:
+        """Resolve native metadata, including an abstract static field's owner."""
+        try:
+            return model_cls._meta.get_field(field_name)
+        except FieldDoesNotExist:
+            if model_cls._meta.abstract:
+                info = self.lookup_model_typeinfo(api, model_cls)
+                if get_field_type_from_model_type_info(info, field_name) is not None:
+                    symbol = info.get(field_name) if info is not None else None
+                    if symbol is not None and isinstance(symbol.node, Var):
+                        owner = self.get_model_class_by_fullname(symbol.node.info.fullname)
+                        if owner is not None and owner is not model_cls:
+                            return owner._meta.get_field(field_name)
+            raise
 
     def get_expected_types(self, api: TypeChecker, model_cls: type[Model], *, method: str) -> dict[str, MypyType]:
         contenttypes_in_apps = self.apps_registry.is_installed("django.contrib.contenttypes")

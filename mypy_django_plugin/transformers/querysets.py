@@ -1115,17 +1115,17 @@ def validate_bulk_update(
         return ctx.default_return_type
 
     for field_name in field_names:
-        validate_non_pk_concrete_field(ctx, django_model.cls, field_name, method)
+        validate_non_pk_concrete_field(ctx, django_model.cls, field_name, method, django_context=django_context)
 
     return ctx.default_return_type
 
 
 def _validate_bulk_create_unique_field(
-    ctx: MethodContext, model_cls: type[Model], field_name: str, method: str
+    ctx: MethodContext, model_cls: type[Model], field_name: str, method: str, django_context: DjangoContext
 ) -> bool:
-    return (field := try_get_field(ctx, model_cls, field_name, resolve_pk=True)) is not None and check_field_concrete(
-        ctx, field, field_name, method
-    )
+    return (
+        field := try_get_field(ctx, model_cls, field_name, django_context=django_context, resolve_pk=True)
+    ) is not None and check_field_concrete(ctx, field, field_name, method)
 
 
 def validate_bulk_create(
@@ -1142,12 +1142,14 @@ def validate_bulk_create(
     update_field_names = _extract_field_names_from_collection(ctx, django_context, arg_index=4)
     if update_field_names is not None:
         for field_name in update_field_names:
-            validate_non_pk_concrete_field(ctx, django_model.cls, field_name, method, attr_name="update_fields")
+            validate_non_pk_concrete_field(
+                ctx, django_model.cls, field_name, method, django_context=django_context, attr_name="update_fields"
+            )
 
     unique_field_names = _extract_field_names_from_collection(ctx, django_context, arg_index=5)
     if unique_field_names is not None:
         for field_name in unique_field_names:
-            _validate_bulk_create_unique_field(ctx, django_model.cls, field_name, method)
+            _validate_bulk_create_unique_field(ctx, django_model.cls, field_name, method, django_context)
 
     return ctx.default_return_type
 
@@ -1255,7 +1257,7 @@ def validate_update(ctx: MethodContext, django_context: DjangoContext) -> MypyTy
         return ctx.default_return_type
 
     for field_name in kwargs:
-        field = try_get_field(ctx, django_model.cls, field_name)
+        field = try_get_field(ctx, django_model.cls, field_name, django_context=django_context)
         if field is not None:
             check_field_concrete(ctx, field, field_name, method="update")
 
@@ -1268,7 +1270,7 @@ def validate_in_bulk(ctx: MethodContext, django_context: DjangoContext) -> MypyT
         or (field_name_expr := helpers.get_call_argument_by_name(ctx, "field_name")) is None
         or (field_name := helpers.resolve_string_attribute_value(field_name_expr, django_context)) is None
         or field_name == "pk"
-        or (field := try_get_field(ctx, django_model.cls, field_name)) is None
+        or (field := try_get_field(ctx, django_model.cls, field_name, django_context=django_context)) is None
     ):
         return ctx.default_return_type
 

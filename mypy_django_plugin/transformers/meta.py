@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from django.core.exceptions import FieldDoesNotExist
-from mypy.types import AnyType, Instance, TypeOfAny, get_proper_type
+from mypy.types import AnyType, Instance, TypeOfAny, TypeVarType, get_proper_type
 from mypy.types import Type as MypyType
 
 from mypy_django_plugin.django.context import DjangoContext, get_field_type_from_model_type_info
@@ -18,10 +18,14 @@ def return_proper_field_type_from_get_field(ctx: MethodContext, django_context: 
     if not (
         isinstance(ctx.type, Instance)
         and ctx.type.args
-        and isinstance(model_type := get_proper_type(ctx.type.args[0]), Instance)
         and (field_name_expr := helpers.get_call_argument_by_name(ctx, "field_name")) is not None
         and (field_name := helpers.resolve_string_attribute_value(field_name_expr, django_context)) is not None
     ):
+        return ctx.default_return_type
+    model_type = get_proper_type(ctx.type.args[0])
+    if isinstance(model_type, TypeVarType):
+        model_type = get_proper_type(model_type.upper_bound)
+    if not isinstance(model_type, Instance):
         return ctx.default_return_type
 
     field_type = get_field_type_from_model_type_info(model_type.type, field_name)
@@ -32,7 +36,7 @@ def return_proper_field_type_from_get_field(ctx: MethodContext, django_context: 
         return ctx.default_return_type
 
     try:
-        field = django_model.cls._meta.get_field(field_name)
+        field = django_context.get_model_field(helpers.get_typechecker_api(ctx), django_model.cls, field_name)
         if field_info := helpers.lookup_class_typeinfo(helpers.get_typechecker_api(ctx), field.__class__):
             return Instance(field_info, [])
     except FieldDoesNotExist as e:
