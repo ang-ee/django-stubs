@@ -53,6 +53,10 @@ def typecheck_model_method(
             ctx.api.fail(f'Unexpected attribute "{actual_name}" for model "{model_cls.__name__}"', ctx.context)
             min_arg_count -= 1  # To avoid double error (Unexpected attribute + too many arguments)
             continue
+        if actual_name == "pk":
+            # The primary-key property is a keyword alias, not another
+            # positional model field counted in expected_keys.
+            min_arg_count -= 1
         helpers.check_types_compatible(
             ctx,
             expected_type=expected_types[actual_name],

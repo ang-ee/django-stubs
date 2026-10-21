@@ -219,6 +219,13 @@ class DjangoContext:
             primary_key_field = self.get_primary_key_field(model_cls)
             field_set_type = self.get_field_set_type(api, primary_key_field, method=method)
             expected_types["pk"] = field_set_type
+        elif method == "__init__":
+            try:
+                self.get_primary_key_field(model_cls)
+            except ValueError:
+                # A polymorphic type[Abstract] may add any concrete primary key,
+                # just as the native abstract Model.pk and pk lookup contracts do.
+                expected_types["pk"] = AnyType(TypeOfAny.implementation_artifact)
 
         model_info = self.lookup_model_typeinfo(api, model_cls)
         for field in model_cls._meta.get_fields():
