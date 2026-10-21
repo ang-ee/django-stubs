@@ -56,3 +56,24 @@ def test_primary_key_setter_matches_property_and_accepts_none(field: type[models
         assert row.pk == value
         row._set_pk_val(None)
         assert row.pk is None
+
+
+def test_abstract_self_relation_without_primary_key_uses_unknown_pk_contract() -> None:
+    context = DjangoContext("scripts.django_tests_settings")
+    with isolate_apps():
+
+        class Abstract(models.Model):
+            parent = models.ForeignKey("self", null=True, on_delete=models.PROTECT)
+            count = models.IntegerField()
+
+            class Meta:
+                abstract = True
+                app_label = "abstract_pk_contract"
+
+        assert context.resolve_lookup_into_field(Abstract, "pk") == (None, Abstract)
+        assert context.resolve_lookup_into_field(Abstract, "parent_id") == (None, Abstract)
+        assert context.solve_lookup_type(Abstract, "parent_id__in") is None
+        assert context.solve_lookup_type(Abstract, "parent__isnull") is not None
+        field, owner = context.resolve_lookup_into_field(Abstract, "count")
+        assert field is Abstract._meta.get_field("count")
+        assert owner is Abstract

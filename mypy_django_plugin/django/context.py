@@ -463,12 +463,27 @@ class DjangoContext:
         self, model_cls: type[Model], lookup: str
     ) -> tuple[Sequence[str], Sequence[str], Expression | Literal[False]] | None:
         query = Query(model_cls)
-        if (lookup == "pk" or lookup.startswith("pk__")) and query.get_meta().pk is None:  # type: ignore[comparison-overlap]
+        unknown_pk = query.get_meta().pk is None  # type: ignore[comparison-overlap]
+        if (lookup == "pk" or lookup.startswith("pk__")) and unknown_pk:
             # Primary key lookup when no primary key field is found, model is presumably
             # abstract and we can't say anything about 'pk'.
             return None
         try:
-            return query.solve_lookup_type(lookup)
+            solved = query.solve_lookup_type(lookup)
+            if unknown_pk and model_cls._meta.abstract:
+                lookup_parts, field_parts, _ = solved
+                if len(field_parts) == 1:
+                    field = model_cls._meta.get_field(field_parts[0])
+                    lookup_class = field.get_lookup(lookup_parts[-1]) if lookup_parts else Exact
+                    if (
+                        isinstance(field, ForeignKey)
+                        and field.to_fields == [None]
+                        and self.get_field_related_model_cls(field) is model_cls
+                        and lookup_class is not None
+                        and issubclass(lookup_class, (Exact, In))
+                    ):
+                        return None
+            return solved
         # This occurs when the following conditions are met:
         # - model_cls._meta.abstract = True
         # - part of the lookup is a foreign key defined on model_cls where the 'to' argument is a string
@@ -609,10 +624,18 @@ class DjangoContext:
             elif isinstance(related, Instance) and (target := helpers.DjangoModel.from_model_type(related, self)):
                 if parts and Field().get_lookup(parts[0]) is None and not is_id:
                     return self.resolve_lookup_expected_type(ctx, target.cls, LOOKUP_SEP.join(parts), target.typ)
-                primary_key_type = self.get_field_get_type(api, target.info, target.cls._meta.pk, method="init")
+                primary_key_type: MypyType
+                try:
+                    primary_key_field = self.get_primary_key_field(target.cls)
+                except ValueError:
+                    primary_key_type = AnyType(TypeOfAny.implementation_artifact)
+                else:
+                    primary_key_type = self.get_field_get_type(api, target.info, primary_key_field, method="init")
                 value_type = (
                     primary_key_type if is_id else make_optional_type(UnionType.make_union([related, primary_key_type]))
                 )
+                if is_id and helpers.is_optional(mapped.get):
+                    value_type = make_optional_type(value_type)
             else:
                 return None
         else:

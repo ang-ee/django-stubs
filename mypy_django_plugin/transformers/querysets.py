@@ -28,6 +28,7 @@ from mypy.nodes import (
     TupleExpr,
     Var,
 )
+from mypy.typeanal import make_optional_type
 from mypy.types import (
     AnyType,
     CallableType,
@@ -42,7 +43,7 @@ from mypy.types import (
 )
 from mypy.types import Type as MypyType
 
-from mypy_django_plugin.django.context import DjangoContext, LookupsAreUnsupported
+from mypy_django_plugin.django.context import DjangoContext, LookupsAreUnsupported, get_field_type_from_model_type_info
 from mypy_django_plugin.lib import fullnames, helpers
 from mypy_django_plugin.lib.field_validation import (
     check_field_concrete,
@@ -102,6 +103,22 @@ def get_field_type_from_lookup(
     try:
         lookup_field, model_cls = django_context.resolve_lookup_into_field(model_cls, lookup)
     except FieldError as exc:
+        # A generator may declare its abstract relation before materializing it.
+        # Only its FK attname has the same lookup and projection PK contract.
+        if model_cls._meta.abstract and lookup.endswith("_id") and LOOKUP_SEP not in lookup:
+            model_info = django_context.lookup_model_typeinfo(helpers.get_typechecker_api(ctx), model_cls)
+            field_type = get_field_type_from_model_type_info(model_info, lookup[:-3])
+            if (
+                model_info is not None
+                and field_type is not None
+                and field_type.type.has_base(fullnames.FOREIGN_KEY_FULLNAME)
+            ):
+                result = django_context._resolve_declared_field_lookup(ctx, model_cls, lookup, Instance(model_info, []))
+                if result is not None:
+                    mapped = helpers.get_field_type_args(field_type)
+                    if mapped is not None and helpers.is_optional(mapped.get):
+                        return make_optional_type(result)
+                    return result
         if not silent_on_error:
             ctx.api.fail(exc.args[0], ctx.context)
         return None
