@@ -6,6 +6,7 @@ import sys
 from functools import cache, cached_property, partial
 from typing import TYPE_CHECKING, Any, Final
 
+from django.apps import AppConfig
 from mypy.build import PRI_MED, PRI_MYPY
 from mypy.modulefinder import mypy_path
 from mypy.nodes import Import, ImportFrom, MypyFile, TypeInfo
@@ -382,7 +383,12 @@ class NewSemanalDjangoPlugin(Plugin):
         # Cache would be cleared if any settings do change.
         extra_data = {
             # The additional deps depend on the installed apps
-            "INSTALLED_APPS": list(self.django_context.settings.INSTALLED_APPS),
+            "INSTALLED_APPS": [
+                {"name": app.name, "label": app.label, "config": helpers.get_class_fullname(type(app))}
+                if isinstance(app, AppConfig)
+                else app
+                for app in self.django_context.settings.INSTALLED_APPS
+            ],
             # The user model determines the `_User` alias expansion
             "AUTH_USER_MODEL": self.django_context.settings.AUTH_USER_MODEL,
             # The implicit `pk` field type depends on `DEFAULT_AUTO_FIELD`

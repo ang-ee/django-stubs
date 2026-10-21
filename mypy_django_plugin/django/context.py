@@ -588,4 +588,4 @@ class DjangoContext:
 
     @cached_property
     def is_contrib_auth_installed(self) -> bool:
-        return "django.contrib.auth" in self.settings.INSTALLED_APPS
+        return self.apps_registry.is_installed("django.contrib.auth")
