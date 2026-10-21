@@ -510,6 +510,15 @@ class AddManagerAttribute(ModelClassInitializer):
             return
         manager_cls = manager.__class__
         manager_fullname = helpers.get_class_fullname(manager_cls)
+        # Model already provides the automatic plain Manager[Self] contract.
+        # Specializing it on each abstract mixin creates conflicting MI slots.
+        if (
+            model_cls._meta.abstract
+            and manager is not None
+            and manager.auto_created
+            and manager_fullname == fullnames.MANAGER_CLASS_FULLNAME
+        ):
+            return
 
         try:
             manager_info = self.lookup_typeinfo_or_incomplete_defn_error(manager_fullname)
