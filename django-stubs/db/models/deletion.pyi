@@ -60,7 +60,7 @@ class Collector:
     using: str
     origin: Model | QuerySet[Model] | None
     data: dict[type[Model], set[Model] | list[Model]]
-    field_updates: defaultdict[tuple[Field[Any, Any], Any], list[Model]]
+    field_updates: defaultdict[tuple[Field[Any, Any], Any], list[_IndexableCollection[Model]]]
     restricted_objects: defaultdict[Model, defaultdict[Field[Any, Any], set[Model]]]
     fast_deletes: list[QuerySet[Model]]
     dependencies: defaultdict[Model, set[Model]]
