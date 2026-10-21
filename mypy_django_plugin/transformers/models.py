@@ -480,7 +480,10 @@ class AddDefaultManagerAttribute(ModelClassInitializer):
         if "_default_manager" in self.model_classdef.info.names:
             return None
 
-        default_manager_cls = model_cls._meta.default_manager.__class__
+        default_manager = model_cls._meta.default_manager
+        if default_manager is None and model_cls._meta.abstract:
+            return
+        default_manager_cls = default_manager.__class__
         default_manager_fullname = helpers.get_class_fullname(default_manager_cls)
 
         try:
@@ -497,8 +500,8 @@ class AddDefaultManagerAttribute(ModelClassInitializer):
                 return None
             default_manager_info = generated_manager_info
 
-        default_manager = helpers.fill_manager(default_manager_info, Instance(self.model_classdef.info, []))
-        self.add_new_var_to_model_class("_default_manager", default_manager, is_classvar=True)
+        default_manager_type = helpers.fill_manager(default_manager_info, Instance(self.model_classdef.info, []))
+        self.add_new_var_to_model_class("_default_manager", default_manager_type, is_classvar=True)
 
 
 class AddReverseLookups(ModelClassInitializer):
