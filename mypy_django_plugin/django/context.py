@@ -136,6 +136,15 @@ class DjangoContext:
                     modules[model_cls.__module__][model_cls.__name__] = model_cls
         return modules
 
+    def get_model_manager(
+        self,
+        api: TypeChecker | SemanticAnalyzer,
+        model_cls: type[Model],
+        name: Literal["_default_manager", "_base_manager"],
+    ) -> models.Manager[Model] | None:
+        """Resolve a model's manager through Django's native Options selector."""
+        return model_cls._meta.default_manager if name == "_default_manager" else model_cls._meta.base_manager
+
     def get_model_fullname(self, model_cls: type[Model]) -> str:
         """Return the declaration identity used to accept model values.
 
