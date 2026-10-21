@@ -78,8 +78,10 @@ def fill_descriptor_types_for_related_field(ctx: FunctionContext, django_context
                 derived_model_info = django_context.lookup_model_typeinfo(helpers.get_typechecker_api(ctx), model_cls)
                 if derived_model_info is not None:
                     fk_ref_type = Instance(derived_model_info, [])
+                    concrete_info = helpers.lookup_class_typeinfo(helpers.get_typechecker_api(ctx), model_cls)
+                    fk_get_type = Instance(concrete_info, []) if concrete_info is not None else fk_ref_type
                     derived_fk_type = reparametrize_related_field_type(
-                        default_related_field_type, set_type=fk_ref_type, get_type=fk_ref_type
+                        default_related_field_type, set_type=fk_ref_type, get_type=fk_get_type
                     )
                     helpers.add_new_sym_for_info(derived_model_info, name=current_field.name, sym_type=derived_fk_type)
 
@@ -90,7 +92,7 @@ def fill_descriptor_types_for_related_field(ctx: FunctionContext, django_context
 
     typechecker_api = helpers.get_typechecker_api(ctx)
 
-    related_model_info = django_context.lookup_model_typeinfo(typechecker_api, related_model)
+    related_model_info = helpers.lookup_class_typeinfo(typechecker_api, related_model)
     related_model_type: ProperType
     if related_model_info is None:
         # maybe no type stub

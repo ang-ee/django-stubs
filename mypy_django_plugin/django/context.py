@@ -135,7 +135,10 @@ class DjangoContext:
         return modules
 
     def get_model_fullname(self, model_cls: type[Model]) -> str:
-        """Return the static class identity for a registered runtime model."""
+        """Return the declaration identity used to accept model values.
+
+        Read results and app registry lookups retain the registered model's own identity.
+        """
         return helpers.get_class_fullname(model_cls)
 
     def lookup_model_typeinfo(self, api: TypeChecker | SemanticAnalyzer, model_cls: type[Model]) -> TypeInfo | None:
@@ -297,9 +300,9 @@ class DjangoContext:
     @cached_property
     def _model_class_fullnames_by_label_lower(self) -> Mapping[str, str]:
         return {
-            klass._meta.label_lower: self.get_model_fullname(klass)
+            klass._meta.label_lower: helpers.get_class_fullname(klass)
             for klass in self.all_registered_model_classes
-            if klass is not models.Model
+            if klass is not models.Model and not klass._meta.abstract
         }
 
     def model_class_fullname_for_label(self, label: str) -> str | None:
@@ -368,13 +371,13 @@ class DjangoContext:
         is_nullable = self.get_field_nullability(field, method)
         if isinstance(field, RelatedField):
             related_model_cls = self.get_field_related_model_cls(field)
-            rel_model_info = self.lookup_model_typeinfo(api, related_model_cls)
+            rel_model_info = helpers.lookup_class_typeinfo(api, related_model_cls)
 
             if method in ("values", "values_list"):
                 primary_key_field = self.get_primary_key_field(related_model_cls)
                 return self.get_field_get_type(api, rel_model_info, primary_key_field, method=method)
 
-            model_info = self.lookup_model_typeinfo(api, related_model_cls)
+            model_info = helpers.lookup_class_typeinfo(api, related_model_cls)
             if model_info is None:
                 return AnyType(TypeOfAny.unannotated)
 

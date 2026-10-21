@@ -39,7 +39,7 @@ def test_runtime_model_lookup_uses_context_identity(mapped: bool) -> None:
         assert context.lookup_model_typeinfo(api, model) is info
         assert initializer.lookup_class_typeinfo_or_incomplete_defn_error(model) is info
         with mock.patch.object(context, "all_registered_model_classes", {model}):
-            assert context._model_class_fullnames_by_label_lower["identity.record"] == classdef.fullname
+            assert context._model_class_fullnames_by_label_lower["identity.record"] == "runtime_models.Record"
         assert model.__module__ == "runtime_models"
 
 
@@ -55,3 +55,21 @@ def test_model_identity_does_not_redirect_field_class_lookup() -> None:
         initializer.lookup_class_typeinfo_or_incomplete_defn_error(models.CharField)
     model_identity.assert_not_called()
     lookup.assert_called_once_with("django.db.models.fields.CharField")
+
+
+def test_app_registry_identity_excludes_abstract_model_declarations() -> None:
+    context = DjangoContext("scripts.django_tests_settings")
+    with isolate_apps():
+        abstract = type(
+            "AbstractRecord",
+            (models.Model,),
+            {"__module__": "source_models", "Meta": type("Meta", (), {"app_label": "identity", "abstract": True})},
+        )
+        concrete = type(
+            "Record",
+            (abstract,),
+            {"__module__": "runtime_models", "Meta": type("Meta", (), {"app_label": "identity"})},
+        )
+        with mock.patch.object(context, "all_registered_model_classes", {abstract, concrete}):
+            assert context.model_class_fullname_for_label("identity.AbstractRecord") is None
+            assert context.model_class_fullname_for_label("identity.Record") == "runtime_models.Record"
