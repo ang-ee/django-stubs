@@ -1,0 +1,41 @@
+- case: concrete_model_infers_actual_inherited_manager_under_broad_abstract_slot
+  main: |
+    from typing_extensions import assert_type
+    from myapp.models import Child, Replacement
+
+    assert_type(Child.objects.marker(), int)
+    assert_type(Child.objects.get(), Child)
+    assert_type(Child.objects.get().title, str)
+    assert_type(Replacement.objects.label(), str)
+    assert_type(Replacement.objects.get(), Replacement)
+    Child.objects.get().title = object()  # E: Incompatible types in assignment (expression has type "object", variable has type "str | int | Combinable")  [assignment]
+    Child.objects.absent()  # E: "CustomManager[Child]" has no attribute "absent"  [attr-defined]
+    Replacement.objects.marker()  # E: "ReplacementManager[Replacement]" has no attribute "marker"  [attr-defined]
+  installed_apps:
+    - myapp
+  files:
+    - path: myapp/__init__.py
+    - path: myapp/models.py
+      content: |
+        from typing import ClassVar
+        from typing_extensions import Self
+        from django.db import models
+
+        class CustomManager[M: models.Model](models.Manager[M]):
+            def marker(self) -> int:
+                return 42
+
+        class ReplacementManager[M: models.Model](models.Manager[M]):
+            def label(self) -> str:
+                return "replacement"
+
+        class Parent(models.Model):
+            objects: ClassVar[models.Manager[Self]] = CustomManager()
+            class Meta:
+                abstract = True
+
+        class Child(Parent):
+            title = models.CharField()
+
+        class Replacement(Parent):
+            objects = ReplacementManager()

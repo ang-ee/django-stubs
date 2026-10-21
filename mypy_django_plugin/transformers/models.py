@@ -390,8 +390,11 @@ class AddManagers(ModelClassInitializer):
 
             if manager_node and isinstance(manager_node.node, Var):
                 manager_node.node.is_classvar = True
-            if manager_node and manager_node.type is not None:
-                # Manager is already typed -> do nothing unless it's a dynamically generated manager
+            if manager_node and manager_node.type is not None and (
+                manager_name in self.model_classdef.info.names or manager_info is None
+            ):
+                # Preserve explicit local annotations and unresolved-manager fallbacks.
+                # Inherited slots otherwise use the concrete manager Django resolved.
                 self.reparametrize_dynamically_created_manager(manager_name, manager_info)
                 continue
 
