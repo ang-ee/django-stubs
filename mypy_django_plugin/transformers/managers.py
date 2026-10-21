@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
 
+from mypy.mro import calculate_mro
 from mypy.nodes import (
     GDEF,
     CallExpr,
@@ -328,6 +329,7 @@ def _get_or_create_manager_class_for_queryset(
     *,
     base_manager_info: TypeInfo,
     runtime_manager_base: TypeInfo,
+    additional_manager_bases: list[TypeInfo],
 ) -> TypeInfo:
     """Get or create the generated manager for `<QuerySet>.as_manager()`.
 
@@ -342,7 +344,8 @@ def _get_or_create_manager_class_for_queryset(
     if (
         existing_sym is not None
         and isinstance(existing_sym.node, TypeInfo)
-        and existing_sym.node.has_base(fullnames.MANAGER_CLASS_FULLNAME)
+        and existing_sym.node.has_base(base_manager_info.fullname)
+        and all(existing_sym.node.has_base(base.fullname) for base in additional_manager_bases)
         and existing_sym.node.metadata.get("django", {}).get("from_queryset_manager") == queryset_info.fullname
     ):
         # Reuse an identical, already generated, manager
@@ -355,6 +358,13 @@ def _get_or_create_manager_class_for_queryset(
             line=queryset_info.line,
             with_unique_name=True,
         )
+        # Each queryset parent contributes an as_manager return contract. Retain
+        # all of those generated manager bases, sharing the model type variable.
+        for base in additional_manager_bases:
+            new_manager_info.bases.append(Instance(base, new_manager_info.bases[0].args))
+        if additional_manager_bases:
+            new_manager_info.mro = []
+            calculate_mro(new_manager_info)
         populate_manager_from_queryset(new_manager_info, queryset_info)
         register_dynamically_created_manager(
             fullname=new_manager_info.fullname,
@@ -434,12 +444,40 @@ def add_as_manager_to_queryset_class(ctx: ClassDefContext) -> None:
         if not base_as_manager.plugin_generated and base_manager_info.has_base(fullnames.MANAGER_CLASS_FULLNAME):
             runtime_manager_base = base_manager_info
 
+    # Multiple queryset parents each contribute an as_manager return contract.
+    # Wait for their generated methods before choosing the static manager bases.
+    manager_bases = [base_manager_info]
+    for base in queryset_info.bases:
+        if base.type.fullname == fullnames.QUERYSET_CLASS_FULLNAME or not base.type.has_base(
+            fullnames.QUERYSET_CLASS_FULLNAME
+        ):
+            continue
+        if "as_manager" not in base.type.names:
+            return _defer()
+        parent_method = base.type.get("as_manager")
+        if parent_method is None:
+            return _defer()
+        parent_method_type = _get_funcdef_type(parent_method.node)
+        if not isinstance(parent_method_type, CallableType):
+            return _defer()
+        parent_return = semanal_api.anal_type(parent_method_type.ret_type)
+        if parent_return is None:
+            return _defer()
+        parent_return = get_proper_type(parent_return)
+        if isinstance(parent_return, Instance):
+            parent_manager = parent_return.type
+            if any(manager.has_base(parent_manager.fullname) for manager in manager_bases):
+                continue
+            manager_bases = [manager for manager in manager_bases if not parent_manager.has_base(manager.fullname)]
+            manager_bases.append(parent_manager)
+
     try:
         new_manager_info = _get_or_create_manager_class_for_queryset(
             semanal_api,
             queryset_info,
-            base_manager_info=base_manager_info,
+            base_manager_info=manager_bases[0],
             runtime_manager_base=runtime_manager_base,
+            additional_manager_bases=manager_bases[1:],
         )
     except helpers.IncompleteDefnException:
         return _defer()
