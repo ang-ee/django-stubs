@@ -1,7 +1,7 @@
 -   case: explicit_chronology_annotation_preserves_concrete_subclass
     main: |
         from datetime import datetime
-        from typing import assert_type
+        from typing_extensions import assert_type
         from myapp.models import Child, Other
         row = Child.objects.record_scope().get()
         assert_type(row.name, str)
@@ -17,6 +17,7 @@
         -   path: myapp/__init__.py
         -   path: myapp/models.py
             content: |
+                from __future__ import annotations
                 from datetime import datetime
                 from typing import TypeVar, TypedDict
                 from django.db import models

@@ -1,7 +1,8 @@
 -   case: abstract_primary_key_constructor_preserves_native_unknown_key_contract
     main: |
         from uuid import uuid4
-        from typing import TypeVar, assert_type
+        from typing import TypeVar
+        from typing_extensions import assert_type
         from myapp.models import Base, IntegerRow, StringRow, UUIDRow
 
         T = TypeVar("T", bound=Base)

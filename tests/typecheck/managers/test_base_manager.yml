@@ -17,13 +17,16 @@
     - path: myapp/__init__.py
     - path: myapp/models.py
       content: |
+        from typing import TypeVar
         from django.db import models
 
-        class ScopedManager[M: models.Model](models.Manager[M]):
+        M = TypeVar("M", bound=models.Model)
+
+        class ScopedManager(models.Manager[M]):
             def scope_marker(self) -> bool:
                 return True
 
-        class BaseQuerySet[M: models.Model](models.QuerySet[M]):
+        class BaseQuerySet(models.QuerySet[M]):
             def raw_marker(self) -> int:
                 return 42
 

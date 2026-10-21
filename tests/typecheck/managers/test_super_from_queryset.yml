@@ -1,6 +1,6 @@
 -   case: test_super_resolves_methods_copied_from_a_queryset
     main: |
-        from typing import assert_type
+        from typing_extensions import assert_type
         from myapp.models import OtherRecord, Record
         assert_type(Record.objects.create(title="valid"), Record)
         assert_type(Record.objects.create(title="valid").title, str)
@@ -15,7 +15,8 @@
         -   path: myapp/__init__.py
         -   path: myapp/models.py
             content: |
-                from typing import Generic, TypeVar, assert_type
+                from typing import Generic, TypeVar
+                from typing_extensions import assert_type
                 from django.db import models
                 from typing_extensions import override
 

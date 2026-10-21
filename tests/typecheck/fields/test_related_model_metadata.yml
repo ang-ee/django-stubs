@@ -1,6 +1,7 @@
 -   case: test_forward_related_model_metadata_retains_model
     main: |
-        from typing import Any, assert_type
+        from typing import Any
+        from typing_extensions import assert_type
         from django.db import models
         from myapp.models import Book, Publisher
 

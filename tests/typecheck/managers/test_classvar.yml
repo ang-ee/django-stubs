@@ -14,7 +14,7 @@
     - path: myapp/__init__.py
     - path: myapp/models.py
       content: |
-        from typing import ClassVar
+        from typing import ClassVar, TypeVar
         from typing_extensions import Self
         from django.db import models
 
@@ -23,7 +23,9 @@
             class Meta:
                 abstract = True
 
-        class CustomManager[M: models.Model](models.Manager[M]):
+        M = TypeVar("M", bound=models.Model)
+
+        class CustomManager(models.Manager[M]):
             pass
 
         class Child(Parent):

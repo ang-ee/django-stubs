@@ -1,8 +1,8 @@
 -   case: test_file_accepts_native_readers_and_preserves_text_binary_output
     main: |
         from io import BytesIO, StringIO, RawIOBase
-        from typing import Iterator, assert_type
-        from typing_extensions import override
+        from typing import Iterator
+        from typing_extensions import assert_type, override
         from django.core.files.base import File, ContentFile
 
         class BinaryReader:

@@ -25,22 +25,26 @@
             objects = ChildQuerySet.as_manager()
     - path: myapp/base.py
       content: |
-        from typing import TYPE_CHECKING
+        from typing import TYPE_CHECKING, TypeVar
         from django.db import models
         if TYPE_CHECKING:
             from .models import Record
 
-        class ParentQuerySet[T: "Record"](models.QuerySet[T]):
+        T = TypeVar("T", bound="Record")
+
+        class ParentQuerySet(models.QuerySet[T]):
             def parent_method(self) -> str:
                 return "parent"
     - path: myapp/querysets.py
       content: |
-        from typing import TYPE_CHECKING
+        from typing import TYPE_CHECKING, TypeVar
         from .base import ParentQuerySet
         if TYPE_CHECKING:
             from .models import Record
 
-        class ChildQuerySet[T: "Record"](ParentQuerySet[T]):
+        T = TypeVar("T", bound="Record")
+
+        class ChildQuerySet(ParentQuerySet[T]):
             def child_method(self) -> int:
                 return 1
 
@@ -72,25 +76,29 @@
             objects = ChildQuerySet.as_manager()
     - path: myapp/base.py
       content: |
-        from typing import TYPE_CHECKING
+        from typing import TYPE_CHECKING, TypeVar
         from django.db import models
         if TYPE_CHECKING:
             from .models import Record
 
-        class OtherQuerySet[T: "Record"](models.QuerySet[T]):
+        T = TypeVar("T", bound="Record")
+
+        class OtherQuerySet(models.QuerySet[T]):
             def other_method(self) -> bool:
                 return True
 
-        class ParentQuerySet[T: "Record"](models.QuerySet[T]):
+        class ParentQuerySet(models.QuerySet[T]):
             def parent_method(self) -> str:
                 return "parent"
     - path: myapp/querysets.py
       content: |
-        from typing import TYPE_CHECKING
+        from typing import TYPE_CHECKING, TypeVar
         from .base import ParentQuerySet, OtherQuerySet
         if TYPE_CHECKING:
             from .models import Record
 
-        class ChildQuerySet[T: "Record"](ParentQuerySet[T], OtherQuerySet[T]):
+        T = TypeVar("T", bound="Record")
+
+        class ChildQuerySet(ParentQuerySet[T], OtherQuerySet[T]):
             def child_method(self) -> int:
                 return 1

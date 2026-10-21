@@ -1,6 +1,6 @@
 -   case: test_foreign_key_db_constraint_is_a_mutable_boolean_option
     main: |
-        from typing import assert_type
+        from typing_extensions import assert_type
         from django.db import models
 
         field: models.ForeignKey[models.Model, models.Model] = models.ForeignKey(

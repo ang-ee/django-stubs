@@ -1,6 +1,7 @@
 -   case: alias_preserves_bounded_model_typevar_and_row_shape
     main: |
-        from typing import TypeVar, assert_type
+        from typing import TypeVar
+        from typing_extensions import assert_type
         from typing_extensions import Self
         from django.db import models
         from myapp.models import Base, Child, Other

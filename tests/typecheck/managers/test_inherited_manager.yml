@@ -17,15 +17,17 @@
     - path: myapp/__init__.py
     - path: myapp/models.py
       content: |
-        from typing import ClassVar
+        from typing import ClassVar, TypeVar
         from typing_extensions import Self
         from django.db import models
 
-        class CustomManager[M: models.Model](models.Manager[M]):
+        M = TypeVar("M", bound=models.Model)
+
+        class CustomManager(models.Manager[M]):
             def marker(self) -> int:
                 return 42
 
-        class ReplacementManager[M: models.Model](models.Manager[M]):
+        class ReplacementManager(models.Manager[M]):
             def label(self) -> str:
                 return "replacement"
 

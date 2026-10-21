@@ -1,6 +1,6 @@
 -   case: test_date_navigation_preserves_self_through_multiple_abstract_models
     main: |
-        from typing import assert_type
+        from typing_extensions import assert_type
         from myapp.models import Combined, Child, Other
 
         assert_type(Combined().get_next_by_created_at(), Combined)
@@ -15,7 +15,7 @@
         -   path: myapp/__init__.py
         -   path: myapp/models.py
             content: |
-                from typing import Self
+                from typing_extensions import Self
                 from django.db import models
 
                 class Left(models.Model):
