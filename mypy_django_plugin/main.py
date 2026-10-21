@@ -16,6 +16,7 @@ from mypy.plugin import (
     ClassDefContext,
     DynamicClassDefContext,
     FunctionContext,
+    FunctionSigContext,
     MethodContext,
     Plugin,
     ReportConfigContext,
@@ -62,6 +63,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from mypy.options import Options
+    from mypy.types import CallableType
     from mypy.types import Type as MypyType
 
 
@@ -155,6 +157,12 @@ class NewSemanalDjangoPlugin(Plugin):
             # For `Manager.from_queryset`
             self._new_dependency("django.db.models.query"),
         ]
+
+    @override
+    def get_function_signature_hook(self, fullname: str) -> Callable[[FunctionSigContext], CallableType] | None:
+        if fullname in {"django.db.models.enums.TextChoices", "django.db.models.enums.IntegerChoices"}:
+            return choices.functional_enum_signature
+        return None
 
     @override
     def get_function_hook(self, fullname: str) -> Callable[[FunctionContext], MypyType] | None:
