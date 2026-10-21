@@ -1,0 +1,47 @@
+-   case: alias_preserves_bounded_model_typevar_and_row_shape
+    main: |
+        from typing import TypeVar, assert_type
+        from typing_extensions import Self
+        from django.db import models
+        from myapp.models import Base, Child, Other
+
+        T = TypeVar("T", bound=Base)
+
+        class Records(models.QuerySet[T]):
+            def aliased(self) -> Self:
+                rows = self.alias(marker=models.Value(1))
+                assert_type(rows.get(), T)
+                return rows.filter(marker=1)
+
+        def aliases(rows: models.QuerySet[T]) -> models.QuerySet[T]:
+            return rows.alias(marker=models.Value(1)).filter(marker=1)
+
+        def projected(rows: models.QuerySet[T, str]) -> models.QuerySet[T, str]:
+            return rows.alias(marker=models.Value(1))
+
+        records = Records[Child](model=Child)
+        assert_type(records.aliased().get(), Child)
+        assert_type(records.aliased().get().name, str)
+        assert_type(aliases(records).get(), Child)
+        wrong: Other = records.aliased().get()  # E: Incompatible types in assignment (expression has type "Child", variable has type "Other")  [assignment]
+        records.aliased().get().marker  # E: "Child" has no attribute "marker"  [attr-defined]
+        records.aliased().get().missing  # E: "Child" has no attribute "missing"  [attr-defined]
+        bad: int = records.aliased().get().name  # E: Incompatible types in assignment (expression has type "str", variable has type "int")  [assignment]
+    installed_apps:
+        - myapp
+    files:
+        -   path: myapp/__init__.py
+        -   path: myapp/models.py
+            content: |
+                from django.db import models
+
+                class Base(models.Model):
+                    name = models.CharField(max_length=30)
+                    class Meta:
+                        abstract = True
+
+                class Child(Base):
+                    pass
+
+                class Other(models.Model):
+                    pass

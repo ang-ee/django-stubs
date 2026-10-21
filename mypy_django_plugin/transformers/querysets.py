@@ -437,7 +437,9 @@ def _resolve_annotate_row_type(
     return original_row_type
 
 
-def extract_proper_type_queryset_annotate(ctx: MethodContext, django_context: DjangoContext) -> MypyType:
+def extract_proper_type_queryset_annotate(
+    ctx: MethodContext, django_context: DjangoContext, *, is_alias: bool = False
+) -> MypyType:
     django_model = helpers.get_model_info_from_qs_ctx(ctx, django_context)
     if django_model is None:
         # When the queryset's model is a TypeVar (e.g. inside a generic queryset method body),
@@ -446,6 +448,10 @@ def extract_proper_type_queryset_annotate(ctx: MethodContext, django_context: Dj
         # with return types declared as `QS[WithAnnotations[_Model, ...]]`.
         upper_bound = _extract_model_type_var_upper_bound(ctx)
         if upper_bound is not None:
+            if is_alias:
+                # SQL aliases do not add attributes to returned model instances.
+                # Keep both the bounded model TypeVar and the existing row shape.
+                return ctx.default_return_type
             default_return_type = get_proper_type(ctx.default_return_type)
             if isinstance(default_return_type, Instance):
                 api = helpers.get_typechecker_api(ctx)
