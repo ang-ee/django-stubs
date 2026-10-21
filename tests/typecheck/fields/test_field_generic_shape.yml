@@ -1,0 +1,37 @@
+-   case: test_custom_field_retains_its_own_generic_parameter_shape
+    main: |
+        from typing_extensions import reveal_type
+        from myapp.models import OneField, ExtraField, FixedField, Record
+        reveal_type(OneField(str))  # N: Revealed type is "myapp.models.OneField[str]"
+        reveal_type(ExtraField[int, str, bool](bool))  # N: Revealed type is "myapp.models.ExtraField[int, str, bool]"
+        reveal_type(FixedField())  # N: Revealed type is "myapp.models.FixedField"
+        reveal_type(Record.text.field.marker)  # N: Revealed type is "type[str]"
+        reveal_type(Record().text)  # N: Revealed type is "str"
+        reveal_type(Record._meta.get_field("text").marker)  # N: Revealed type is "type[str]"
+        Record(text="valid")
+        Record(text=3)  # E: Incompatible type for "text" of "Record" (got "int", expected "str")  [misc]
+        Record().text = 3  # E: Incompatible types in assignment (expression has type "int", variable has type "str")  [assignment]
+    monkeypatch: true
+    installed_apps:
+        - myapp
+    files:
+        -   path: myapp/__init__.py
+        -   path: myapp/models.py
+            content: |
+                from typing import Any, Generic, TypeVar
+                from django.db import models
+                T = TypeVar('T')
+                S = TypeVar('S')
+                G = TypeVar('G')
+                X = TypeVar('X')
+                class OneField(models.Field[T,T], Generic[T]):
+                    def __init__(self, marker: type[T], **kwargs: Any) -> None:
+                        self.marker = marker
+                        super().__init__(**kwargs)
+                class ExtraField(models.Field[S,G], Generic[S,G,X]):
+                    def __init__(self, marker: type[X], **kwargs: Any) -> None:
+                        self.marker = marker
+                        super().__init__(**kwargs)
+                class FixedField(models.Field[int,int]): ...
+                class Record(models.Model):
+                    text = OneField(str)

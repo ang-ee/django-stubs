@@ -92,10 +92,9 @@ def get_field_type_from_model_type_info(info: TypeInfo | None, field_name: str) 
     field_type = get_proper_type(field_node.type)
     if not isinstance(field_type, Instance):
         return None
-    # Field declares a set and a get type arg. Fallback to `None` when we can't find any args.
-    # Not every model attribute is a field,
-    # a reverse o2o accessor is a two arg descriptor whose args would be misread as set/get types.
-    if len(field_type.args) != 2 or not field_type.type.has_base(fullnames.FIELD_FULLNAME):
+    # A custom field can have a different number of generic parameters than Field.
+    # Reverse descriptors are not fields, even when they also have two type arguments.
+    if not field_type.type.has_base(fullnames.FIELD_FULLNAME):
         return None
     return field_type
 
@@ -103,14 +102,16 @@ def get_field_type_from_model_type_info(info: TypeInfo | None, field_name: str) 
 def _get_field_set_type_from_model_type_info(info: TypeInfo | None, field_name: str) -> MypyType | None:
     field_type = get_field_type_from_model_type_info(info, field_name)
     if field_type is not None:
-        return field_type.args[0]
+        mapped = helpers.get_field_type_args(field_type)
+        return mapped.set if mapped is not None else None
     return None
 
 
 def _get_field_get_type_from_model_type_info(info: TypeInfo | None, field_name: str) -> MypyType | None:
     field_type = get_field_type_from_model_type_info(info, field_name)
     if field_type is not None:
-        return field_type.args[1]
+        mapped = helpers.get_field_type_args(field_type)
+        return mapped.get if mapped is not None else None
     return None
 
 

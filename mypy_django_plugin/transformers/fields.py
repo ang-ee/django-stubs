@@ -5,8 +5,10 @@ from typing import TYPE_CHECKING, NamedTuple, cast
 from django.core.exceptions import FieldDoesNotExist
 from django.db.models.fields import AutoField
 from django.db.models.fields.related import RelatedField
+from mypy.infer import infer_type_arguments
 from mypy.maptype import map_instance_to_supertype
 from mypy.nodes import AssignmentStmt, NameExpr, TypeInfo
+from mypy.typeops import get_type_vars
 from mypy.types import (
     AnyType,
     Instance,
@@ -19,6 +21,7 @@ from mypy.types import (
     get_proper_type,
 )
 from mypy.types import Type as MypyType
+from mypy.typevars import fill_typevars
 
 from mypy_django_plugin.exceptions import UnregisteredModelError
 from mypy_django_plugin.lib import fullnames, helpers
@@ -184,7 +187,23 @@ def set_descriptor_types_for_field(
                 ctx.context,
             )
 
-    return default_return_type.copy_modified(args=[set_type, get_type])
+    # Descriptor parameters belong to Field, not necessarily this subclass.
+    generic_field = fill_typevars(default_return_type.type)
+    assert isinstance(generic_field, Instance)
+    field_info = next(base for base in generic_field.type.mro if base.fullname == fullnames.FIELD_FULLNAME)
+    template = map_instance_to_supertype(generic_field, field_info)
+    inferred = infer_type_arguments(
+        generic_field.type.defn.type_vars, template, Instance(field_info, [set_type, get_type])
+    )
+    descriptor_vars = {variable.id for variable in get_type_vars(template)}
+    return default_return_type.copy_modified(
+        args=[
+            original if variable.id not in descriptor_vars or value is None else value
+            for variable, original, value in zip(
+                generic_field.type.defn.type_vars, default_return_type.args, inferred, strict=True
+            )
+        ]
+    )
 
 
 def determine_type_of_array_field(ctx: FunctionContext, django_context: DjangoContext) -> MypyType:
