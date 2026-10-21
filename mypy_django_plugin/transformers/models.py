@@ -388,6 +388,8 @@ class AddManagers(ModelClassInitializer):
             manager_fullname = helpers.get_class_fullname(manager.__class__)
             manager_info = self.lookup_manager(manager_fullname, manager)
 
+            if manager_node and isinstance(manager_node.node, Var):
+                manager_node.node.is_classvar = True
             if manager_node and manager_node.type is not None:
                 # Manager is already typed -> do nothing unless it's a dynamically generated manager
                 self.reparametrize_dynamically_created_manager(manager_name, manager_info)

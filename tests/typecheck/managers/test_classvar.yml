@@ -1,0 +1,31 @@
+- case: declared_model_managers_are_class_variables_when_replaced_on_a_child
+  main: |
+    from typing_extensions import assert_type
+    from myapp.models import Child
+
+    assert_type(Child.objects.get(), Child)
+    assert_type(Child.objects.get().title, str)
+    Child.objects.missing()  # E: "CustomManager[Child]" has no attribute "missing"  [attr-defined]
+    Child.objects.get().title = object()  # E: Incompatible types in assignment (expression has type "object", variable has type "str | int | Combinable")  [assignment]
+    Child.objects = 1  # E: Incompatible types in assignment (expression has type "int", variable has type "CustomManager[Child]")  [assignment]
+  installed_apps:
+    - myapp
+  files:
+    - path: myapp/__init__.py
+    - path: myapp/models.py
+      content: |
+        from typing import ClassVar
+        from typing_extensions import Self
+        from django.db import models
+
+        class Parent(models.Model):
+            objects: ClassVar[models.Manager[Self]] = models.Manager()
+            class Meta:
+                abstract = True
+
+        class CustomManager[M: models.Model](models.Manager[M]):
+            pass
+
+        class Child(Parent):
+            objects = CustomManager()
+            title = models.CharField()
