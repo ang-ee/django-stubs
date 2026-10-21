@@ -672,7 +672,7 @@ class AddReverseLookups(ModelClassInitializer):
 
         related_manager_info = self.lookup_typeinfo_or_incomplete_defn_error(fullnames.RELATED_MANAGER_CLASS)
         # TODO: Support other reverse managers than `_default_manager`
-        default_manager = to_model_info.names.get("_default_manager")
+        default_manager = to_model_info.get("_default_manager")
         if default_manager is None:
             if not self.api.final_iteration:
                 raise helpers.IncompleteDefnException()
@@ -1077,7 +1077,7 @@ class ProcessManyToManyFields(ModelClassInitializer):
         if helpers.get_many_to_many_manager_info(self.api, to=model.type, derived_from="_default_manager") is not None:
             return
 
-        default_manager_node = model.type.names.get("_default_manager")
+        default_manager_node = model.type.get("_default_manager")
         if default_manager_node is None:
             raise helpers.IncompleteDefnException()
         default_manager_type = get_proper_type(default_manager_node.type)

@@ -1,0 +1,46 @@
+-   case: related_managers_resolve_inherited_self_manager_contracts
+    main: |
+        from typing_extensions import assert_type
+        from myapp.models import Link, Record, Root
+
+        assert_type(Record().links.parent_method(), int)
+        assert_type(Record().links.get(), Link)
+        assert_type(Root().records.parent_method(), int)
+        assert_type(Root().records.get(), Record)
+        assert_type(Record().roots.get(), Root)
+        assert_type(Record().links.get().title, str)
+        assert_type(Root().records.get().title, str)
+        Record().links.get().missing()  # E: "Link" has no attribute "missing"  [attr-defined]
+        Root().records.get().missing()  # E: "Record" has no attribute "missing"  [attr-defined]
+        wrong: Link = Root().records.get()  # E: Incompatible types in assignment (expression has type "Record", variable has type "Link")  [assignment]
+        text: str = Record().links.parent_method()  # E: Incompatible types in assignment (expression has type "int", variable has type "str")  [assignment]
+    installed_apps:
+        - myapp
+    files:
+        -   path: myapp/__init__.py
+        -   path: myapp/models.py
+            content: |
+                from typing import TypeVar
+                from django.db import models
+
+                T = TypeVar("T", bound=models.Model)
+                class ParentManager(models.Manager[T]):
+                    def parent_method(self) -> int:
+                        return 1
+                class Parent(models.Model):
+                    title = models.CharField(max_length=20)
+                    objects = ParentManager()
+                    class Meta:
+                        abstract = True
+                class First(Parent):
+                    class Meta:
+                        abstract = True
+                class Second(Parent):
+                    class Meta:
+                        abstract = True
+                class Record(First, Second):
+                    pass
+                class Link(Parent):
+                    record = models.ForeignKey(Record, on_delete=models.CASCADE, related_name="links")
+                class Root(models.Model):
+                    records = models.ManyToManyField(Record, related_name="roots")
