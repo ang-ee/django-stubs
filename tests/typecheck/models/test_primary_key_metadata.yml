@@ -9,6 +9,8 @@
     child._get_pk_val(Child._meta)
     child._get_pk_val(Parent._meta)
     child._get_pk_val(None)
+    assert_type(child._set_pk_val(None), None)
+    child._set_pk_val(42)
     child._get_pk_val(1)  # E: Argument 1 to "_get_pk_val" of "Model" has incompatible type "int"; expected "Options[Never] | None"  [arg-type]
   installed_apps:
     - myapp
