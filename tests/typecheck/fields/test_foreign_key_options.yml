@@ -1,0 +1,11 @@
+-   case: test_foreign_key_db_constraint_is_a_mutable_boolean_option
+    main: |
+        from typing import assert_type
+        from django.db import models
+
+        field: models.ForeignKey[models.Model, models.Model] = models.ForeignKey(
+            "self", on_delete=models.CASCADE, db_constraint=False,
+        )
+        assert_type(field.db_constraint, bool)
+        field.db_constraint = True
+        field.db_constraint = "enabled"  # E: Incompatible types in assignment (expression has type "str", variable has type "bool")  [assignment]
