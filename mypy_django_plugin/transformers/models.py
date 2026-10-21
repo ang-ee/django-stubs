@@ -495,9 +495,17 @@ class AddManagerAttribute(ModelClassInitializer):
         if self.manager_name in self.model_classdef.info.names:
             return None
 
-        manager = (
-            model_cls._meta.default_manager if self.manager_name == "_default_manager" else model_cls._meta.base_manager
-        )
+        try:
+            manager = (
+                model_cls._meta.default_manager
+                if self.manager_name == "_default_manager"
+                else model_cls._meta.base_manager
+            )
+        except ValueError:
+            # Abstract declarations may name a manager supplied by a concrete subclass.
+            if model_cls._meta.abstract:
+                return
+            raise
         if manager is None and model_cls._meta.abstract:
             return
         manager_cls = manager.__class__

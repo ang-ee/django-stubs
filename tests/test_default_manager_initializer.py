@@ -68,3 +68,32 @@ def test_default_manager_initializer_uses_only_existing_managers(
             lookup.assert_called_once_with("django.db.models.manager.Manager")
             assert fill_manager.call_args.args[1] is classdef.info.self_type
             add_var.assert_called_once_with(initializer.manager_name, fill_manager.return_value, is_classvar=True)
+
+
+@pytest.mark.parametrize("initializer_type", [AddDefaultManagerAttribute, AddBaseManagerAttribute])
+@pytest.mark.parametrize("abstract", [True, False])
+def test_named_manager_can_be_deferred_only_by_an_abstract_model(
+    initializer_type: type[AddManagerAttribute], abstract: bool
+) -> None:
+    with mock.patch.dict(os.environ, {"DJANGO_SETTINGS_MODULE": "scripts.django_tests_settings"}):
+        django.setup()
+    with isolate_apps():
+        option = "default_manager_name" if initializer_type is AddDefaultManagerAttribute else "base_manager_name"
+        model = type(
+            "NamedManagerExample",
+            (models.Model,),
+            {
+                "__module__": __name__,
+                "Meta": type("Meta", (), {"abstract": abstract, "app_label": "initializer", option: "future"}),
+            },
+        )
+        classdef = ClassDef("NamedManagerExample", Block([]))
+        classdef.info = TypeInfo(SymbolTable(), classdef, "initializer")
+        initializer = initializer_type(ClassDefContext(classdef, NameExpr("Model"), mock.Mock()), mock.Mock())
+        with mock.patch.object(initializer, "add_new_var_to_model_class") as add_var:
+            if abstract:
+                initializer.run_with_model_cls(model)
+                add_var.assert_not_called()
+            else:
+                with pytest.raises(ValueError, match="has no manager named 'future'"):
+                    initializer.run_with_model_cls(model)
