@@ -35,7 +35,11 @@ from mypy_django_plugin.errorcodes import MANAGER_MISSING
 from mypy_django_plugin.exceptions import UnregisteredModelError
 from mypy_django_plugin.lib import fullnames, helpers
 from mypy_django_plugin.lib.fullnames import ANNOTATIONS_FULLNAME
-from mypy_django_plugin.transformers.fields import FieldDescriptorTypes, get_field_descriptor_types
+from mypy_django_plugin.transformers.fields import (
+    FieldDescriptorTypes,
+    get_field_descriptor_types,
+    reparametrize_related_field_type,
+)
 from mypy_django_plugin.transformers.managers import (
     MANAGER_METHODS_RETURNING_QUERYSET,
     create_manager_info_from_from_queryset_call,
@@ -405,6 +409,26 @@ class AddRelatedModelsId(ModelClassInitializer):
             if related_model_cls._meta.abstract:
                 continue
 
+            # Django creates the forward OneToOneField for multi-table
+            # inheritance without an assignment in the child's source body.
+            if field.auto_created and field.remote_field.parent_link and not (
+                self.model_classdef.info.has_readable_member(field.name)
+            ):
+                relation_info = self.lookup_class_typeinfo_or_incomplete_defn_error(type(field))
+                parent_info = self.lookup_class_typeinfo_or_incomplete_defn_error(related_model_cls)
+                concrete_info = self.lookup_typeinfo_or_incomplete_defn_error(
+                    helpers.get_class_fullname(related_model_cls)
+                )
+                descriptor_types = get_field_descriptor_types(
+                    relation_info, is_set_nullable=field.null, is_get_nullable=field.null
+                )
+                relation_type = reparametrize_related_field_type(
+                    Instance(relation_info, list(descriptor_types)),
+                    set_type=Instance(parent_info, []),
+                    get_type=Instance(concrete_info, []),
+                )
+                self.add_new_var_to_model_class(field.name, relation_type)
+
             rel_target_field = self.django_context.get_related_target_field(related_model_cls, field)
             if not rel_target_field:
                 continue
@@ -424,6 +448,23 @@ class AddRelatedModelsId(ModelClassInitializer):
 
 
 class AddManagers(ModelClassInitializer):
+    def preserves_abstract_manager_annotation(self, name: str, model_cls: type[Model]) -> bool:
+        """Keep reusable abstract slots until Django actually overrides their declaration."""
+        if not self.is_model_abstract or name in self.model_classdef.info.names:
+            return False
+        symbol = self.model_classdef.info.get(name)
+        if symbol is None or not isinstance(symbol.node, Var):
+            return False
+        if symbol.node.is_inferred or symbol.type is None:
+            return False
+        owner = symbol.node.info.fullname
+        for base in model_cls.__mro__:
+            if helpers.get_class_fullname(base) == owner:
+                return True
+            if name in vars(base):
+                return False
+        return False
+
     def lookup_manager(self, fullname: str, manager: Manager[Any]) -> TypeInfo | None:
         manager_info = self.lookup_typeinfo(fullname)
         if manager_info is None:
@@ -456,6 +497,8 @@ class AddManagers(ModelClassInitializer):
 
             if manager_node and isinstance(manager_node.node, Var):
                 manager_node.node.is_classvar = True
+            if self.preserves_abstract_manager_annotation(manager_name, model_cls):
+                continue
             if (
                 manager_node
                 and manager_node.type is not None

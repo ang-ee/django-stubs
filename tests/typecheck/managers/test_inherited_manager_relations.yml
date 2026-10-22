@@ -10,6 +10,10 @@
         assert_type(Record().roots.get(), Root)
         assert_type(Record().links.get().title, str)
         assert_type(Root().records.get().title, str)
+        assert_type(Root().records.target_field_name, str)
+        Root().records._get_target_ids(Root().records.target_field_name, [Record(), 1])
+        Root().records._get_target_ids(1, [Record()])  # E: Argument 1 to "_get_target_ids" of "ManyRelatedManager" has incompatible type "int"; expected "str"  [arg-type]
+        Root().records._get_target_ids("record", [Link()])  # E: List item 0 has incompatible type "Link"; expected "Record | int"  [list-item]
         Record().links.get().missing()  # E: "Link" has no attribute "missing"  [attr-defined]
         Root().records.get().missing()  # E: "Record" has no attribute "missing"  [attr-defined]
         wrong: Link = Root().records.get()  # E: Incompatible types in assignment (expression has type "Record", variable has type "Link")  [assignment]

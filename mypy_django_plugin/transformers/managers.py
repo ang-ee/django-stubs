@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
 
+from mypy.maptype import map_instance_to_supertype
 from mypy.mro import calculate_mro
 from mypy.nodes import (
     GDEF,
@@ -86,6 +87,20 @@ def get_method_type_from_dynamic_manager(
 
     # Resolve the method as if it was accessed on the queryset, parametrized with the manager's model.
     queryset_instance = Instance(queryset_info, (manager_model.item,) * len(queryset_info.type_vars))
+    if method_name == "get_queryset":
+        # The factory changes _queryset_class, not the inherited method's
+        # arguments. Only Django's native getter guarantees that it constructs
+        # _queryset_class; an authored override retains its declared contract.
+        for base in manager_type_info.mro[1:]:
+            symbol = base.names.get(method_name)
+            if symbol is None or isinstance(get_proper_type(symbol.type), AnyType):
+                continue
+            inherited = map_instance_to_supertype(manager_instance, base)
+            signature = get_proper_type(find_member(method_name, inherited, inherited))
+            if base.fullname == fullnames.BASE_MANAGER_CLASS_FULLNAME and isinstance(signature, CallableType):
+                return signature.copy_modified(ret_type=queryset_instance)
+            return signature
+        return None
     method_type = find_member(method_name, queryset_instance, queryset_instance)
 
     # For methods on the manager that return a queryset we need to override the
@@ -317,7 +332,7 @@ def populate_manager_from_queryset(manager_info: TypeInfo, queryset_info: TypeIn
     # by adding the methods as attributes with type Any to the manager
     # class. The actual type of these methods are resolved in
     # resolve_manager_method.
-    for method_name in MANAGER_METHODS_RETURNING_QUERYSET:
+    for method_name in (*MANAGER_METHODS_RETURNING_QUERYSET, "get_queryset"):
         helpers.add_new_sym_for_info(
             manager_info,
             name=method_name,

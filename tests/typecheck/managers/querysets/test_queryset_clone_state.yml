@@ -1,0 +1,13 @@
+- case: queryset_projection_and_known_related_clone_state
+  main: |
+    from typing_extensions import assert_type
+    from django.contrib.auth.models import User
+    from django.db.models import QuerySet
+
+    rows = QuerySet[User]()
+    assert_type(rows._fields, tuple[str, ...] | None)
+    rows._fields = ('id', 'username')
+    rows._fields = None
+    assert_type(rows._merge_known_related_objects(rows), None)
+    rows._fields = (1,)  # E: Incompatible types in assignment (expression has type "tuple[int]", variable has type "tuple[str, ...] | None")  [assignment]
+    rows._merge_known_related_objects(object())  # E: Argument 1 to "_merge_known_related_objects" of "QuerySet" has incompatible type "object"; expected "QuerySet[Model, Any]"  [arg-type]

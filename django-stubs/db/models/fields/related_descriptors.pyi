@@ -155,6 +155,8 @@ class ManyToManyDescriptor(ReverseManyToOneDescriptor[Any], Generic[_To, _Throug
 class ManyRelatedManager(Manager[_To], Generic[_To, _Through]):
     related_val: tuple[int, ...]
     through: type[_Through]
+    target_field_name: str
+    def _get_target_ids(self, target_field_name: str, objs: Iterable[_To | int]) -> set[Any]: ...
     def __call__(self, *, manager: str) -> ManyRelatedManager[_To, _Through]: ...
     def add(
         self,

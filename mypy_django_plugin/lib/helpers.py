@@ -709,6 +709,12 @@ def get_model_from_expression(
     if lazy_reference is not None:
         model_info = resolve_lazy_reference(lazy_reference, api=api, django_context=django_context, ctx=expr)
         if model_info is not None:
+            # A relationship's accepted model identity comes from the context,
+            # just as ForeignKey's descriptor setter does. This also covers
+            # contexts that map generated models to authored declarations.
+            model_cls = django_context.get_model_class_by_fullname(model_info.fullname)
+            if model_cls is not None:
+                model_info = django_context.lookup_model_typeinfo(api, model_cls) or model_info
             return Instance(model_info, [])
     return None
 
