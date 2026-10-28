@@ -1,0 +1,24 @@
+-   case: test_choices_functional_factory_uses_native_enum_signature
+    main: |
+        from typing_extensions import assert_type
+        from django.db.models import TextChoices, IntegerChoices
+        def make(name: str, members: list[tuple[str, tuple[str,str]]]) -> type[TextChoices]:
+            return TextChoices(name, members)
+        def integer(name: str, members: dict[str,int]) -> type[IntegerChoices]:
+            return IntegerChoices(name, members)
+        assert_type(TextChoices('Mode', [('A', ('a','A'))]), type[TextChoices])
+        assert_type(TextChoices('Mode', {'A':('a','A')}), type[TextChoices])
+        assert_type(TextChoices('Mode', 'A B'), type[TextChoices])
+        class Mode(TextChoices):
+            A = 'a', 'A'
+        assert_type(Mode('a'), Mode)
+        assert_type(Mode.A.label, str)
+        TextChoices(3, {'A':('a','A')})
+        IntegerChoices('Mode', {'A':1}, module=3)
+    out: |
+        main:14: error: No overload variant of "__call__" of "EnumMeta" matches argument types "int", "dict[str, tuple[str, str]]"  [call-overload]
+        main:14: note: Possible overload variants:
+        main:14: note:     def __call__(cls, value: str, names: str | Iterable[str] | Iterable[Iterable[str | Any]] | Mapping[str, Any], *, module: str | None = ..., qualname: str | None = ..., type: type | None = ..., start: int = ..., boundary: FlagBoundary | None = ...) -> type[TextChoices]
+        main:15: error: No overload variant of "__call__" of "EnumMeta" matches argument types "str", "dict[str, int]", "int"  [call-overload]
+        main:15: note: Possible overload variants:
+        main:15: note:     def __call__(cls, value: str, names: str | Iterable[str] | Iterable[Iterable[str | Any]] | Mapping[str, Any], *, module: str | None = ..., qualname: str | None = ..., type: type | None = ..., start: int = ..., boundary: FlagBoundary | None = ...) -> type[IntegerChoices]

@@ -1,0 +1,123 @@
+-   case: inherited_self_manager_contract_is_not_redeclared_on_each_abstract_donor
+    main: |
+        from typing_extensions import assert_type
+        from myapp.models import First, Other, Registered, Second
+
+        class Local(First, Second):
+            class Meta:
+                app_label = "myapp"
+
+        assert_type(Registered._base_manager.get(), Registered)
+        assert_type(Registered._base_manager.child_method(), str)
+        assert_type(Registered._default_manager.get(), Registered)
+        assert_type(Registered.objects.get(), Registered)
+        assert_type(Local._base_manager.get(), Local)
+        assert_type(Local._base_manager.child_method(), str)
+        assert_type(Local._default_manager.get(), Local)
+        assert_type(Local.objects.get(), Local)
+        assert_type(Local.objects.child_method(), str)
+        assert_type(Local.objects.get().title, str)
+        Local._base_manager.missing()  # E: "ChildManager[Local]" has no attribute "missing"  [attr-defined]
+        Local.objects.get().title = object()  # E: Incompatible types in assignment (expression has type "object", variable has type "str | int | Combinable")  [assignment]
+        wrong: Other = Local.objects.get()  # E: Incompatible types in assignment (expression has type "Local", variable has type "Other")  [assignment]
+    installed_apps:
+        - myapp
+    files:
+        -   path: myapp/__init__.py
+        -   path: myapp/models.py
+            content: |
+                from typing import TypeVar
+                from django.db import models
+
+                T = TypeVar("T", bound=models.Model)
+                class ParentManager(models.Manager[T]):
+                    def parent_method(self) -> int:
+                        return 1
+                class ChildManager(ParentManager[T]):
+                    def child_method(self) -> str:
+                        return "child"
+                class Parent(models.Model):
+                    title = models.CharField(max_length=20)
+                    objects = ParentManager()
+                    class Meta:
+                        abstract = True
+                        base_manager_name = "objects"
+                class Child(Parent):
+                    objects = ChildManager()
+                    class Meta(Parent.Meta):
+                        abstract = True
+                class First(Child):
+                    class Meta(Child.Meta):
+                        abstract = True
+                class Second(Parent):
+                    class Meta(Parent.Meta):
+                        abstract = True
+                class Registered(First, Second):
+                    pass
+                class Other(models.Model):
+                    pass
+
+-   case: multiple_inherited_derived_manager_slots_use_django_selected_subclass
+    main: |
+        from typing_extensions import assert_type
+        from myapp.models import CapturedManager, CapturedRawManager, Registered
+
+        assert_type(Registered._default_manager.get(), Registered)
+        assert_type(Registered._default_manager.captured(), bool)
+        assert_type(Registered._base_manager.get(), Registered)
+        assert_type(Registered._base_manager.captured(), bool)
+        assert_type(Registered.objects, CapturedManager[Registered])
+        assert_type(Registered.raw, CapturedRawManager[Registered])
+        Registered._default_manager.missing()  # E: "CapturedManager[Registered]" has no attribute "missing"  [attr-defined]
+        Registered._base_manager.missing()  # E: "CapturedRawManager[Registered]" has no attribute "missing"  [attr-defined]
+    installed_apps:
+        - myapp
+    files:
+        -   path: myapp/__init__.py
+        -   path: myapp/models.py
+            content: |
+                from typing import ClassVar, TypeVar
+                from typing_extensions import Self
+                from django.db import models
+
+                T = TypeVar("T", bound=models.Model)
+
+                class ScopedManager(models.Manager[T]):
+                    pass
+
+                class RawManager(models.Manager[T]):
+                    pass
+
+                class CapturedManager(ScopedManager[T]):
+                    def captured(self) -> bool:
+                        return True
+
+                class CapturedRawManager(RawManager[T]):
+                    def captured(self) -> bool:
+                        return True
+
+                class NativeTracked(models.Model):
+                    objects: ClassVar[models.Manager[Self]] = models.Manager()
+                    raw = models.Manager()
+                    class Meta:
+                        abstract = True
+                        base_manager_name = "raw"
+
+                class Captured(NativeTracked):
+                    objects: ClassVar[ScopedManager[Self]] = CapturedManager()
+                    raw: ClassVar[RawManager[Self]] = CapturedRawManager()
+                    class Meta(NativeTracked.Meta):
+                        abstract = True
+
+                class LocalBase(Captured):
+                    class Meta(Captured.Meta):
+                        abstract = True
+
+                class OtherBranch(NativeTracked):
+                    objects: ClassVar[ScopedManager[Self]] = ScopedManager()
+                    raw: ClassVar[RawManager[Self]] = RawManager()
+                    class Meta(NativeTracked.Meta):
+                        abstract = True
+
+                class Registered(LocalBase, OtherBranch):
+                    pass

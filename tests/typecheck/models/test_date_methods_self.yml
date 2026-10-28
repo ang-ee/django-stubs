@@ -1,0 +1,40 @@
+-   case: test_date_navigation_preserves_self_through_multiple_abstract_models
+    main: |
+        from typing_extensions import assert_type
+        from myapp.models import Combined, Child, Other
+
+        assert_type(Combined().get_next_by_created_at(), Combined)
+        assert_type(Combined().get_previous_by_created_at(), Combined)
+        assert_type(Child().get_next_by_created_at(), Child)
+        assert_type(Child().get_previous_by_created_at(), Child)
+        assert_type(Child().next_record(), Child)
+        wrong: Other = Combined().get_next_by_created_at()  # E: Incompatible types in assignment (expression has type "Combined", variable has type "Other")  [assignment]
+    installed_apps:
+        - myapp
+    files:
+        -   path: myapp/__init__.py
+        -   path: myapp/models.py
+            content: |
+                from typing_extensions import Self
+                from django.db import models
+
+                class Left(models.Model):
+                    created_at = models.DateTimeField()
+                    class Meta:
+                        abstract = True
+                    def next_record(self) -> Self:
+                        return self.get_next_by_created_at()
+
+                class Right(models.Model):
+                    created_at = models.DateTimeField()
+                    class Meta:
+                        abstract = True
+
+                class Combined(Left, Right):
+                    title = models.CharField(max_length=64)
+
+                class Child(Combined):
+                    note = models.TextField()
+
+                class Other(models.Model):
+                    pass

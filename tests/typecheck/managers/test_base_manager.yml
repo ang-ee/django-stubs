@@ -1,0 +1,44 @@
+- case: model_base_manager_uses_actual_named_manager_and_queryset
+  main: |
+    from typing_extensions import assert_type
+    from myapp.models import Record
+
+    assert_type(Record._base_manager.raw_marker(), int)
+    assert_type(Record._base_manager.get(), Record)
+    assert_type(Record._base_manager.get().title, str)
+    assert_type(Record._default_manager.scope_marker(), bool)
+    assert_type(Record._default_manager.get(), Record)
+    Record._base_manager.get().title = object()  # E: Incompatible types in assignment (expression has type "object", variable has type "str | int | Combinable")  [assignment]
+    Record._base_manager.absent()  # E: "ManagerFromBaseQuerySet[Record]" has no attribute "absent"  [attr-defined]
+    Record._default_manager.raw_marker()  # E: "ScopedManager[Record]" has no attribute "raw_marker"  [attr-defined]
+  installed_apps:
+    - myapp
+  files:
+    - path: myapp/__init__.py
+    - path: myapp/models.py
+      content: |
+        from typing import TypeVar
+        from django.db import models
+
+        M = TypeVar("M", bound=models.Model)
+
+        class ScopedManager(models.Manager[M]):
+            def scope_marker(self) -> bool:
+                return True
+
+        class BaseQuerySet(models.QuerySet[M]):
+            def raw_marker(self) -> int:
+                return 42
+
+        BaseManager = models.Manager.from_queryset(BaseQuerySet)
+
+        class Parent(models.Model):
+            objects = ScopedManager()
+            raw_rows = BaseManager()
+            class Meta:
+                abstract = True
+                base_manager_name = "raw_rows"
+                default_manager_name = "objects"
+
+        class Record(Parent):
+            title = models.CharField()

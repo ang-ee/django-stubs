@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from collections import deque
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
+from django.core.exceptions import FieldDoesNotExist
+from django.db.models import Model
 from django.db.models.fields import DateField, DateTimeField, Field
 from django.db.models.fields.reverse_related import ForeignObjectRel, ManyToManyRel, OneToOneRel
+from mypy.expandtype import expand_self_type
 from mypy.nodes import (
     ARG_STAR2,
     MDEF,
@@ -33,7 +36,11 @@ from mypy_django_plugin.errorcodes import MANAGER_MISSING
 from mypy_django_plugin.exceptions import UnregisteredModelError
 from mypy_django_plugin.lib import fullnames, helpers
 from mypy_django_plugin.lib.fullnames import ANNOTATIONS_FULLNAME
-from mypy_django_plugin.transformers.fields import FieldDescriptorTypes, get_field_descriptor_types
+from mypy_django_plugin.transformers.fields import (
+    FieldDescriptorTypes,
+    get_field_descriptor_types,
+    reparametrize_related_field_type,
+)
 from mypy_django_plugin.transformers.managers import (
     MANAGER_METHODS_RETURNING_QUERYSET,
     create_manager_info_from_from_queryset_call,
@@ -43,7 +50,7 @@ from mypy_django_plugin.transformers.manytomany import M2MArguments, M2MThrough,
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from django.db.models import Manager, Model
+    from django.db.models import Manager
     from mypy.checker import TypeChecker
     from mypy.nodes import MypyFile
     from mypy.plugin import AnalyzeTypeContext, AttributeContext, ClassDefContext
@@ -75,7 +82,11 @@ class ModelClassInitializer:
         return info
 
     def lookup_class_typeinfo_or_incomplete_defn_error(self, klass: type) -> TypeInfo:
-        fullname = helpers.get_class_fullname(klass)
+        fullname = (
+            self.django_context.get_model_fullname(klass)
+            if issubclass(klass, Model)
+            else helpers.get_class_fullname(klass)
+        )
         return self.lookup_typeinfo_or_incomplete_defn_error(fullname)
 
     def create_new_var(self, name: str, typ: MypyType) -> Var:
@@ -101,6 +112,34 @@ class ModelClassInitializer:
 
     def add_new_class_for_current_module(self, name: str, bases: list[Instance]) -> TypeInfo:
         return helpers.add_new_class_for_module(self.current_module, name=name, bases=bases)
+
+    def inherited_manager_matches(self, name: str, manager_info: TypeInfo) -> bool:
+        """Reuse a native Self slot only when every inherited branch agrees with Django."""
+        if name in self.model_classdef.info.names:
+            return False
+        symbols = [self.model_classdef.info.get(name)]
+        symbols.extend(base.type.get(name) for base in self.model_classdef.info.bases)
+        for index, symbol in enumerate(symbols):
+            if symbol is None:
+                if index == 0:
+                    return False
+                continue
+            if not isinstance(symbol.node, Var) or symbol.type is None:
+                return False
+            typ = get_proper_type(symbol.type)
+            if not (
+                isinstance(typ, Instance)
+                and typ.type in manager_info.mro
+                and symbol.node.info.self_type is not None
+                and typ.args == (symbol.node.info.self_type,)
+            ):
+                return False
+            # Derived manager slots are writable class variables. Reusing them
+            # across different manager classes leaves incompatible MI definitions,
+            # even when Django's selected manager subclasses the other branch's.
+            if (index == 0 or name in {"_base_manager", "_default_manager"}) and typ.type is not manager_info:
+                return False
+        return True
 
     def run(self) -> None:
         model_cls = self.django_context.get_model_class_by_fullname(self.model_classdef.fullname)
@@ -271,6 +310,43 @@ class InjectAnyAsBaseForNestedMeta(ModelClassInitializer):
         return None
 
 
+class AllowAbstractFieldRemoval(ModelClassInitializer):
+    """Respect Django's explicit ``field = None`` removal of abstract fields."""
+
+    @override
+    def run_with_model_cls(self, model_cls: type[Model]) -> None:
+        for statement in self.model_classdef.defs.body:
+            if not (
+                isinstance(statement, AssignmentStmt)
+                and isinstance(statement.rvalue, NameExpr)
+                and statement.rvalue.fullname == "builtins.None"
+            ):
+                continue
+            for lvalue in statement.lvalues:
+                if not isinstance(lvalue, NameExpr) or not isinstance(lvalue.node, Var):
+                    continue
+                try:
+                    model_cls._meta.get_field(lvalue.name)
+                except FieldDoesNotExist:
+                    pass
+                else:
+                    continue
+                # The nearest declared owner must be an abstract Django field;
+                # ordinary Python attributes keep normal override checking.
+                for base in self.model_classdef.info.mro[1:]:
+                    if lvalue.name not in base.names:
+                        continue
+                    parent = self.django_context.get_model_class_by_fullname(base.fullname)
+                    if parent is not None and parent._meta.abstract:
+                        try:
+                            field = parent._meta.get_field(lvalue.name)
+                        except FieldDoesNotExist:
+                            break
+                        if isinstance(field, Field):
+                            lvalue.node.allow_incompatible_override = True
+                    break
+
+
 class AddDefaultPrimaryKey(ModelClassInitializer):
     @override
     def run_with_model_cls(self, model_cls: type[Model]) -> None:
@@ -335,6 +411,26 @@ class AddRelatedModelsId(ModelClassInitializer):
             if related_model_cls._meta.abstract:
                 continue
 
+            # Django creates the forward OneToOneField for multi-table
+            # inheritance without an assignment in the child's source body.
+            if field.auto_created and field.remote_field.parent_link and not (
+                self.model_classdef.info.has_readable_member(field.name)
+            ):
+                relation_info = self.lookup_class_typeinfo_or_incomplete_defn_error(type(field))
+                parent_info = self.lookup_class_typeinfo_or_incomplete_defn_error(related_model_cls)
+                concrete_info = self.lookup_typeinfo_or_incomplete_defn_error(
+                    helpers.get_class_fullname(related_model_cls)
+                )
+                descriptor_types = get_field_descriptor_types(
+                    relation_info, is_set_nullable=field.null, is_get_nullable=field.null
+                )
+                relation_type = reparametrize_related_field_type(
+                    Instance(relation_info, list(descriptor_types)),
+                    set_type=Instance(parent_info, []),
+                    get_type=Instance(concrete_info, []),
+                )
+                self.add_new_var_to_model_class(field.name, relation_type)
+
             rel_target_field = self.django_context.get_related_target_field(related_model_cls, field)
             if not rel_target_field:
                 continue
@@ -354,6 +450,23 @@ class AddRelatedModelsId(ModelClassInitializer):
 
 
 class AddManagers(ModelClassInitializer):
+    def preserves_abstract_manager_annotation(self, name: str, model_cls: type[Model]) -> bool:
+        """Keep reusable abstract slots until Django actually overrides their declaration."""
+        if not self.is_model_abstract or name in self.model_classdef.info.names:
+            return False
+        symbol = self.model_classdef.info.get(name)
+        if symbol is None or not isinstance(symbol.node, Var):
+            return False
+        if symbol.node.is_inferred or symbol.type is None:
+            return False
+        owner = symbol.node.info.fullname
+        for base in model_cls.__mro__:
+            if helpers.get_class_fullname(base) == owner:
+                return True
+            if name in vars(base):
+                return False
+        return False
+
     def lookup_manager(self, fullname: str, manager: Manager[Any]) -> TypeInfo | None:
         manager_info = self.lookup_typeinfo(fullname)
         if manager_info is None:
@@ -384,9 +497,21 @@ class AddManagers(ModelClassInitializer):
             manager_fullname = helpers.get_class_fullname(manager.__class__)
             manager_info = self.lookup_manager(manager_fullname, manager)
 
-            if manager_node and manager_node.type is not None:
-                # Manager is already typed -> do nothing unless it's a dynamically generated manager
+            if manager_node and isinstance(manager_node.node, Var):
+                manager_node.node.is_classvar = True
+            if self.preserves_abstract_manager_annotation(manager_name, model_cls):
+                continue
+            if (
+                manager_node
+                and manager_node.type is not None
+                and (manager_name in self.model_classdef.info.names or manager_info is None)
+            ):
+                # Preserve explicit local annotations and unresolved-manager fallbacks.
+                # Inherited slots otherwise use the concrete manager Django resolved.
                 self.reparametrize_dynamically_created_manager(manager_name, manager_info)
+                continue
+
+            if manager_info is not None and self.inherited_manager_matches(manager_name, manager_info):
                 continue
 
             if manager_info is None:
@@ -475,31 +600,63 @@ class AddManagers(ModelClassInitializer):
         return create_manager_info_from_from_queryset_call(self.api, expr.callee)
 
 
-class AddDefaultManagerAttribute(ModelClassInitializer):
+class AddManagerAttribute(ModelClassInitializer):
+    manager_name: ClassVar[Literal["_default_manager", "_base_manager"]]
+
     @override
     def run_with_model_cls(self, model_cls: type[Model]) -> None:
-        if "_default_manager" in self.model_classdef.info.names:
+        if self.manager_name in self.model_classdef.info.names:
             return None
 
-        default_manager_cls = model_cls._meta.default_manager.__class__
-        default_manager_fullname = helpers.get_class_fullname(default_manager_cls)
+        try:
+            manager = self.django_context.get_model_manager(self.api, model_cls, self.manager_name)
+        except ValueError:
+            # Abstract declarations may name a manager supplied by a concrete subclass.
+            if model_cls._meta.abstract:
+                return
+            raise
+        if manager is None and model_cls._meta.abstract:
+            return
+        manager_cls = manager.__class__
+        manager_fullname = helpers.get_class_fullname(manager_cls)
+        # Model already provides the automatic plain Manager[Self] contract.
+        # Specializing it on each abstract mixin creates conflicting MI slots.
+        if (
+            model_cls._meta.abstract
+            and manager is not None
+            and manager.auto_created
+            and manager_fullname == fullnames.MANAGER_CLASS_FULLNAME
+        ):
+            return
 
         try:
-            default_manager_info = self.lookup_typeinfo_or_incomplete_defn_error(default_manager_fullname)
+            manager_info = self.lookup_typeinfo_or_incomplete_defn_error(manager_fullname)
         except helpers.IncompleteDefnException as exc:
-            # Check if default manager could be a generated manager
-            base_manager_fullname = helpers.get_class_fullname(default_manager_cls.__bases__[0])
-            generated_manager_info = self.get_generated_manager_info(default_manager_fullname, base_manager_fullname)
+            # Check if the manager could be a generated manager
+            base_manager_fullname = helpers.get_class_fullname(manager_cls.__bases__[0])
+            generated_manager_info = self.get_generated_manager_info(manager_fullname, base_manager_fullname)
             if generated_manager_info is None:
                 # Manager doesn't appear to be generated. Unless we're on the final round,
-                # see if another round could help figuring out the default manager type
+                # see if another round could help figuring out the manager type
                 if not self.api.final_iteration:
                     raise exc
                 return None
-            default_manager_info = generated_manager_info
+            manager_info = generated_manager_info
 
-        default_manager = helpers.fill_manager(default_manager_info, Instance(self.model_classdef.info, []))
-        self.add_new_var_to_model_class("_default_manager", default_manager, is_classvar=True)
+        if self.inherited_manager_matches(self.manager_name, manager_info):
+            return
+
+        assert self.model_classdef.info.self_type is not None
+        manager_type = helpers.fill_manager(manager_info, self.model_classdef.info.self_type)
+        self.add_new_var_to_model_class(self.manager_name, manager_type, is_classvar=True)
+
+
+class AddDefaultManagerAttribute(AddManagerAttribute):
+    manager_name = "_default_manager"
+
+
+class AddBaseManagerAttribute(AddManagerAttribute):
+    manager_name = "_base_manager"
 
 
 class AddReverseLookups(ModelClassInitializer):
@@ -542,7 +699,7 @@ class AddReverseLookups(ModelClassInitializer):
                 if isinstance(relation.through, str):
                     # A lazy reference Django never resolved, i.e. the through model doesn't exist.
                     return  # type:ignore[unreachable] # this can only happen for broken django setup
-                through_fullname = helpers.get_class_fullname(relation.through)
+                through_fullname = self.django_context.get_model_fullname(relation.through)
                 through_model_info = self.lookup_typeinfo_or_incomplete_defn_error(through_fullname)
                 self.add_new_var_to_model_class(
                     attname,
@@ -560,7 +717,7 @@ class AddReverseLookups(ModelClassInitializer):
 
         related_manager_info = self.lookup_typeinfo_or_incomplete_defn_error(fullnames.RELATED_MANAGER_CLASS)
         # TODO: Support other reverse managers than `_default_manager`
-        default_manager = to_model_info.names.get("_default_manager")
+        default_manager = to_model_info.get("_default_manager")
         if default_manager is None:
             if not self.api.final_iteration:
                 raise helpers.IncompleteDefnException()
@@ -583,6 +740,10 @@ class AddReverseLookups(ModelClassInitializer):
             return
 
         default_manager_type = get_proper_type(default_manager.type)
+        if isinstance(default_manager.node, Var) and default_manager_type is not None:
+            default_manager_type = expand_self_type(
+                default_manager.node, default_manager_type, Instance(to_model_info, [])
+            )
         if (
             # '_default_manager' attribute is a node type we can't process
             not isinstance(default_manager_type, Instance)
@@ -640,7 +801,8 @@ class AddExtraFieldMethods(ModelClassInitializer):
         # get_next_by, get_previous_by for Date, DateTime
         for field in self.django_context.get_model_fields(model_cls):
             if isinstance(field, DateField | DateTimeField) and not field.null:
-                return_type = Instance(self.model_classdef.info, [])
+                assert self.model_classdef.info.self_type is not None
+                self_type = self.model_classdef.info.self_type
                 common.add_method(
                     self.ctx,
                     name=f"get_next_by_{field.attname}",
@@ -652,7 +814,9 @@ class AddExtraFieldMethods(ModelClassInitializer):
                             kind=ARG_STAR2,
                         )
                     ],
-                    return_type=return_type,
+                    return_type=self_type,
+                    self_type=self_type,
+                    tvar_def=self_type,
                 )
                 common.add_method(
                     self.ctx,
@@ -665,7 +829,9 @@ class AddExtraFieldMethods(ModelClassInitializer):
                             kind=ARG_STAR2,
                         )
                     ],
-                    return_type=return_type,
+                    return_type=self_type,
+                    self_type=self_type,
+                    tvar_def=self_type,
                 )
 
 
@@ -957,10 +1123,12 @@ class ProcessManyToManyFields(ModelClassInitializer):
         if helpers.get_many_to_many_manager_info(self.api, to=model.type, derived_from="_default_manager") is not None:
             return
 
-        default_manager_node = model.type.names.get("_default_manager")
+        default_manager_node = model.type.get("_default_manager")
         if default_manager_node is None:
             raise helpers.IncompleteDefnException()
         default_manager_type = get_proper_type(default_manager_node.type)
+        if isinstance(default_manager_node.node, Var) and default_manager_type is not None:
+            default_manager_type = expand_self_type(default_manager_node.node, default_manager_type, model)
         if not isinstance(default_manager_type, Instance):
             return
 
@@ -1112,11 +1280,13 @@ def process_model_class(ctx: ClassDefContext, django_context: DjangoContext) -> 
     initializers = [
         AddAnnotateUtilities,
         InjectAnyAsBaseForNestedMeta,
+        AllowAbstractFieldRemoval,
         AddDefaultPrimaryKey,
         AddPrimaryKeyAlias,
         AddRelatedModelsId,
         AddManagers,
         AddDefaultManagerAttribute,
+        AddBaseManagerAttribute,
         AddReverseLookups,
         AddExtraFieldMethods,
         ProcessManyToManyFields,

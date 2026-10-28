@@ -3,20 +3,30 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from django.core.exceptions import FieldDoesNotExist
+from django.db.models import Field
+
+from mypy_django_plugin.lib import helpers
 
 if TYPE_CHECKING:
     from django.db.models.base import Model
     from django.db.models.options import _AnyField
     from mypy.plugin import MethodContext
 
+    from mypy_django_plugin.django.context import DjangoContext
+
 
 def try_get_field(
-    ctx: MethodContext, model_cls: type[Model], field_name: str, *, resolve_pk: bool = False
+    ctx: MethodContext,
+    model_cls: type[Model],
+    field_name: str,
+    *,
+    django_context: DjangoContext,
+    resolve_pk: bool = False,
 ) -> _AnyField | None:
     opts = model_cls._meta
     resolved_name = opts.pk.name if resolve_pk and field_name == "pk" else field_name
     try:
-        return opts.get_field(resolved_name)
+        return django_context.get_model_field(helpers.get_typechecker_api(ctx), model_cls, resolved_name)
     except FieldDoesNotExist as e:
         ctx.api.fail(str(e), ctx.context)
         return None
@@ -52,6 +62,8 @@ def check_field_not_pk(
     all_pk_fields = set(getattr(opts, "pk_fields", [opts.pk]))
     for parent in getattr(opts, "all_parents", opts.get_parent_list()):
         all_pk_fields.update(getattr(parent._meta, "pk_fields", [parent._meta.pk]))
+    if isinstance(field, Field):
+        all_pk_fields.update(getattr(field.model._meta, "pk_fields", [field.model._meta.pk]))
     if field in all_pk_fields:
         param_str = f' in "{attr_name}="' if attr_name else ""
         ctx.api.fail(f'"{method}()" does not support primary key fields{param_str}. Got "{field_name}"', ctx.context)
@@ -60,7 +72,13 @@ def check_field_not_pk(
 
 
 def validate_non_pk_concrete_field(
-    ctx: MethodContext, model_cls: type[Model], field_name: str, method: str, *, attr_name: str | None = None
+    ctx: MethodContext,
+    model_cls: type[Model],
+    field_name: str,
+    method: str,
+    *,
+    django_context: DjangoContext,
+    attr_name: str | None = None,
 ) -> bool:
     """Check that ``field_name`` is a concrete, non-primary-key field of ``model_cls``.
 
@@ -69,7 +87,7 @@ def validate_non_pk_concrete_field(
     Foreign key attnames such as ``author_id`` are accepted.
     """
     return (
-        (field := try_get_field(ctx, model_cls, field_name)) is not None
+        (field := try_get_field(ctx, model_cls, field_name, django_context=django_context)) is not None
         and check_field_concrete(ctx, field, field_name, method)
         and check_field_not_pk(ctx, model_cls, field, field_name, method, attr_name=attr_name)
     )

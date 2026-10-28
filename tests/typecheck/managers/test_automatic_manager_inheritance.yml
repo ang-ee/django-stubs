@@ -1,0 +1,45 @@
+-   case: automatic_plain_manager_facades_do_not_conflict_with_custom_mixin_managers
+    main: |
+        from typing_extensions import assert_type
+        from myapp.models import Custom, PlainMixin, Registered
+
+        class Local(Custom, PlainMixin):
+            class Meta:
+                app_label = "myapp"
+
+        assert_type(PlainMixin._base_manager.get(), PlainMixin)
+        assert_type(Registered._base_manager.get(), Registered)
+        assert_type(Registered._base_manager.custom(), int)
+        assert_type(Registered._default_manager.get(), Registered)
+        assert_type(Local._base_manager.get(), Local)
+        assert_type(Local._base_manager.get().title, str)
+        assert_type(Local._base_manager.custom(), int)
+        Local._base_manager.missing()  # E: "CustomManager[Local]" has no attribute "missing"  [attr-defined]
+    installed_apps:
+        - myapp
+    files:
+        -   path: myapp/__init__.py
+        -   path: myapp/models.py
+            content: |
+                from typing import TypeVar
+                from django.db import models
+
+                T = TypeVar("T", bound=models.Model)
+
+                class CustomManager(models.Manager[T]):
+                    def custom(self) -> int:
+                        return 1
+
+                class Custom(models.Model):
+                    title = models.CharField(max_length=20)
+                    objects = CustomManager()
+                    class Meta:
+                        abstract = True
+                        base_manager_name = "objects"
+
+                class PlainMixin(models.Model):
+                    class Meta:
+                        abstract = True
+
+                class Registered(Custom, PlainMixin):
+                    pass

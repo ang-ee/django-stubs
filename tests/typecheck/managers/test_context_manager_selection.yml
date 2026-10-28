@@ -1,0 +1,71 @@
+-   case: model_manager_attributes_dispatch_through_context_selection
+    mypy_config: |
+        [mypy]
+        plugins = myplugin.py, mypy.plugins.proper_plugin
+    main: |
+        from typing_extensions import assert_type
+        from myapp.models import Registered, Selected
+
+        assert_type(Selected._base_manager.marker(), int)
+        assert_type(Selected._default_manager.marker(), int)
+        assert_type(Selected._base_manager.get(), Selected)
+        assert_type(Selected._default_manager.get().title, str)
+        assert_type(Registered._base_manager.get(), Registered)
+        Selected._base_manager.missing()  # E: "CustomManager[Selected]" has no attribute "missing"  [attr-defined]
+        wrong: Registered = Selected._default_manager.get()  # E: Incompatible types in assignment (expression has type "Selected", variable has type "Registered")  [assignment]
+    installed_apps:
+        - myapp
+    files:
+        -   path: myapp/__init__.py
+        -   path: myapp/models.py
+            content: |
+                from typing import TYPE_CHECKING, TypeVar
+                from django.db import models
+
+                T = TypeVar("T", bound=models.Model)
+                class CustomManager(models.Manager[T]):
+                    def marker(self) -> int:
+                        return 42
+                class Source(models.Model):
+                    title = models.CharField(max_length=20)
+                    objects = CustomManager()
+                    class Meta:
+                        abstract = True
+                        base_manager_name = "objects"
+                if TYPE_CHECKING:
+                    SelectedBase = Source
+                else:
+                    SelectedBase = models.Model
+                class Selected(SelectedBase):
+                    class Meta:
+                        abstract = True
+                class Registered(Selected, Source):
+                    pass
+        -   path: myplugin.py
+            content: |
+                from __future__ import annotations
+                from typing import Literal
+                from typing_extensions import override
+                from django.db import models
+                from mypy.checker import TypeChecker
+                from mypy.options import Options
+                from mypy.plugin import Plugin
+                from mypy.semanal import SemanticAnalyzer
+                from mypy_django_plugin.django.context import DjangoContext
+                from mypy_django_plugin.main import NewSemanalDjangoPlugin
+
+                class SelectedContext(DjangoContext):
+                    @override
+                    def get_model_manager(
+                        self, api: TypeChecker | SemanticAnalyzer, model_cls: type[models.Model],
+                        name: Literal["_default_manager", "_base_manager"],
+                    ) -> models.Manager[models.Model] | None:
+                        from myapp.models import Selected, Source
+                        owner = Source if model_cls is Selected else model_cls
+                        return super().get_model_manager(api, owner, name)
+                class SelectedPlugin(NewSemanalDjangoPlugin):
+                    def __init__(self, options: Options) -> None:
+                        super().__init__(options)
+                        self.django_context = SelectedContext(self.plugin_config.django_settings_module)
+                def plugin(version: str) -> type[Plugin]:
+                    return SelectedPlugin

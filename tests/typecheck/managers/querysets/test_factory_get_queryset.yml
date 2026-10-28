@@ -1,0 +1,57 @@
+- case: factory_get_queryset_retains_model_and_queryset_and_explicit_overrides
+  installed_apps: [myapp]
+  main: |
+    from typing_extensions import assert_type
+    from django.db.models import QuerySet
+    from myapp.models import Record, Child, Rows, SpecialRows, OtherRows
+    assert_type(Record.objects.get_queryset(), Rows[Record])
+    assert_type(Child.objects.get_queryset(), Rows[Child])
+    assert_type(Record.special.get_queryset(), SpecialRows[Record])
+    assert_type(Record.special.get_queryset().selected().get(), Record)
+    assert_type(Record.overridden.get_queryset(), OtherRows[Record])
+    assert_type(Record.with_argument.get_queryset(limit=2), QuerySet[Record, Record])
+    assert_type(Record.plain.get_queryset(), QuerySet[Record, Record])
+    Record.plain.get_queryset().selected()  # E: "QuerySet[Record, Record]" has no attribute "selected"  [attr-defined]
+    Record.objects.get_queryset().missing()  # E: "Rows[Record]" has no attribute "missing"  [attr-defined]
+    Record.with_argument.get_queryset(limit="bad")  # E: Argument "limit" to "get_queryset" of "ArgumentManager" has incompatible type "str"; expected "int"  [arg-type]
+  files:
+    - path: myapp/__init__.py
+    - path: myapp/models.py
+      content: |
+        from typing import TypeVar
+        from typing_extensions import Self, override
+        from django.db import models
+        M = TypeVar('M', bound=models.Model)
+        class Rows(models.QuerySet[M]):
+            def selected(self) -> Self:
+                return self.filter()
+        class SpecialRows(Rows[M]):
+            pass
+        class OtherRows(models.QuerySet[M]):
+            pass
+        Factory = models.Manager.from_queryset(Rows)
+        class RowManager(Factory[M]):
+            pass
+        SpecialFactory = RowManager.from_queryset(SpecialRows)
+        class Overridden(Factory[M]):
+            @override
+            def get_queryset(self) -> OtherRows[M]:
+                return OtherRows(self.model)
+        class ArgumentManager(models.Manager[M]):
+            @override
+            def get_queryset(self, *, limit: int = 5) -> models.QuerySet[M]:
+                return super().get_queryset()[:limit]
+        ArgumentFactory = ArgumentManager.from_queryset(Rows)
+        class PlainManager(models.Manager[M]):
+            @override
+            def get_queryset(self) -> models.QuerySet[M]:
+                return models.QuerySet(self.model)
+        PlainFactory = PlainManager.from_queryset(Rows)
+        class Record(models.Model):
+            objects = RowManager()
+            special = SpecialFactory()
+            overridden = Overridden()
+            with_argument = ArgumentFactory()
+            plain = PlainFactory()
+        class Child(Record):
+            pass

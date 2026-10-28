@@ -1,7 +1,8 @@
 from collections.abc import Callable, Iterator
 from types import TracebackType
-from typing import IO, AnyStr, Self, type_check_only
+from typing import IO, AnyStr, Self, overload, type_check_only
 
+from _typeshed import SupportsRead
 from django.core.files.utils import FileProxyMixin
 from django.utils.functional import cached_property
 from typing_extensions import override
@@ -11,7 +12,10 @@ class File(FileProxyMixin[AnyStr], IO[AnyStr]):
     file: IO[AnyStr] | None
     name: str | None
     mode: str
+    @overload
     def __init__(self, file: IO[AnyStr] | None, name: str | None = None) -> None: ...
+    @overload
+    def __init__(self, file: SupportsRead[AnyStr], name: str | None = None) -> None: ...
     def __bool__(self) -> bool: ...
     def __len__(self) -> int: ...
     @cached_property

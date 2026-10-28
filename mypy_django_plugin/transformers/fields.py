@@ -5,9 +5,23 @@ from typing import TYPE_CHECKING, NamedTuple, cast
 from django.core.exceptions import FieldDoesNotExist
 from django.db.models.fields import AutoField
 from django.db.models.fields.related import RelatedField
+from mypy.infer import infer_type_arguments
+from mypy.maptype import map_instance_to_supertype
 from mypy.nodes import AssignmentStmt, NameExpr, TypeInfo
-from mypy.types import AnyType, Instance, NoneType, ProperType, TypeOfAny, UninhabitedType, UnionType, get_proper_type
+from mypy.typeops import get_type_vars
+from mypy.types import (
+    AnyType,
+    Instance,
+    NoneType,
+    ProperType,
+    TypeOfAny,
+    TypeType,
+    UninhabitedType,
+    UnionType,
+    get_proper_type,
+)
 from mypy.types import Type as MypyType
+from mypy.typevars import fill_typevars
 
 from mypy_django_plugin.exceptions import UnregisteredModelError
 from mypy_django_plugin.lib import fullnames, helpers
@@ -15,7 +29,7 @@ from mypy_django_plugin.transformers import manytomany
 
 if TYPE_CHECKING:
     from django.db.models.options import _AnyField
-    from mypy.plugin import FunctionContext
+    from mypy.plugin import AttributeContext, FunctionContext
 
     from mypy_django_plugin.django.context import DjangoContext
 
@@ -47,11 +61,13 @@ def _get_current_field_from_assignment(ctx: FunctionContext, django_context: Dja
 
 
 def reparametrize_related_field_type(related_field_type: Instance, set_type: MypyType, get_type: MypyType) -> Instance:
-    args = [
-        helpers.convert_any_to_type(related_field_type.args[0], set_type),
-        helpers.convert_any_to_type(related_field_type.args[1], get_type),
-    ]
-    return related_field_type.copy_modified(args=args)
+    mapped = helpers.get_field_type_args(related_field_type)
+    assert mapped is not None
+    return reparametrize_field_type(
+        related_field_type,
+        helpers.convert_any_to_type(mapped.set, set_type),
+        helpers.convert_any_to_type(mapped.get, get_type),
+    )
 
 
 def fill_descriptor_types_for_related_field(ctx: FunctionContext, django_context: DjangoContext) -> MypyType:
@@ -75,11 +91,13 @@ def fill_descriptor_types_for_related_field(ctx: FunctionContext, django_context
         # __get__/__set__ of ForeignKey of derived model
         for model_cls in django_context.all_registered_model_classes:
             if issubclass(model_cls, current_model_cls) and not model_cls._meta.abstract:
-                derived_model_info = helpers.lookup_class_typeinfo(helpers.get_typechecker_api(ctx), model_cls)
+                derived_model_info = django_context.lookup_model_typeinfo(helpers.get_typechecker_api(ctx), model_cls)
                 if derived_model_info is not None:
                     fk_ref_type = Instance(derived_model_info, [])
+                    concrete_info = helpers.lookup_class_typeinfo(helpers.get_typechecker_api(ctx), model_cls)
+                    fk_get_type = Instance(concrete_info, []) if concrete_info is not None else fk_ref_type
                     derived_fk_type = reparametrize_related_field_type(
-                        default_related_field_type, set_type=fk_ref_type, get_type=fk_ref_type
+                        default_related_field_type, set_type=fk_ref_type, get_type=fk_get_type
                     )
                     helpers.add_new_sym_for_info(derived_model_info, name=current_field.name, sym_type=derived_fk_type)
 
@@ -98,7 +116,7 @@ def fill_descriptor_types_for_related_field(ctx: FunctionContext, django_context
     else:
         related_model_type = Instance(related_model_info, [])
 
-    related_model_to_set_info = helpers.lookup_class_typeinfo(typechecker_api, related_model_to_set)
+    related_model_to_set_info = django_context.lookup_model_typeinfo(typechecker_api, related_model_to_set)
     related_model_to_set_type: ProperType
     if related_model_to_set_info is None:
         # maybe no type stub
@@ -171,7 +189,27 @@ def set_descriptor_types_for_field(
                 ctx.context,
             )
 
-    return default_return_type.copy_modified(args=[set_type, get_type])
+    return reparametrize_field_type(default_return_type, set_type, get_type)
+
+
+def reparametrize_field_type(field_type: Instance, set_type: MypyType, get_type: MypyType) -> Instance:
+    """Map descriptor types back through the field subclass's declared generics."""
+    generic_field = fill_typevars(field_type.type)
+    assert isinstance(generic_field, Instance)
+    field_info = next(base for base in generic_field.type.mro if base.fullname == fullnames.FIELD_FULLNAME)
+    template = map_instance_to_supertype(generic_field, field_info)
+    inferred = infer_type_arguments(
+        generic_field.type.defn.type_vars, template, Instance(field_info, [set_type, get_type])
+    )
+    descriptor_vars = {variable.id for variable in get_type_vars(template)}
+    return field_type.copy_modified(
+        args=[
+            original if variable.id not in descriptor_vars or value is None else value
+            for variable, original, value in zip(
+                generic_field.type.defn.type_vars, field_type.args, inferred, strict=True
+            )
+        ]
+    )
 
 
 def determine_type_of_array_field(ctx: FunctionContext, django_context: DjangoContext) -> MypyType:
@@ -206,10 +244,12 @@ def determine_type_of_array_field(ctx: FunctionContext, django_context: DjangoCo
 
         return _type
 
-    # Both base_field and return type should derive from Field and thus expect 2 arguments
-    assert len(base_field_arg_type.args) == len(default_return_type.args) == 2
+    base_types = helpers.get_field_type_args(base_field_arg_type)
+    array_types = helpers.get_field_type_args(default_return_type)
+    assert base_types is not None and array_types is not None
     args = []
-    for new_type, default_arg in zip(base_field_arg_type.args, default_return_type.args, strict=False):
+    new_type: MypyType
+    for new_type, default_arg in zip(base_types, array_types, strict=True):
         # Drop any base_field Combinable type
         reduced = drop_combinable(new_type)
         if reduced is None:
@@ -222,7 +262,7 @@ def determine_type_of_array_field(ctx: FunctionContext, django_context: DjangoCo
 
         args.append(helpers.convert_any_to_type(default_arg, new_type))
 
-    return default_return_type.copy_modified(args=args)
+    return reparametrize_field_type(default_return_type, args[0], args[1])
 
 
 def transform_into_proper_return_type(ctx: FunctionContext, django_context: DjangoContext) -> MypyType:
@@ -246,3 +286,20 @@ def transform_into_proper_return_type(ctx: FunctionContext, django_context: Djan
         return determine_type_of_array_field(ctx, django_context)
 
     return set_descriptor_types_for_field_callback(ctx, django_context)
+
+
+def related_model_type(ctx: AttributeContext) -> MypyType:
+    """Retain the native forward relation's model when reading its metadata."""
+    field = ctx.type
+    if not isinstance(field, Instance):
+        return ctx.default_attr_type
+    relation_info = next((info for info in field.type.mro if info.fullname == fullnames.FOREIGN_OBJECT_FULLNAME), None)
+    if relation_info is None:
+        return ctx.default_attr_type
+    relation = map_instance_to_supertype(field, relation_info)
+    getter = get_proper_type(relation.args[1])
+    members = [get_proper_type(member) for member in getter.items] if isinstance(getter, UnionType) else [getter]
+    models = [member for member in members if not isinstance(member, NoneType)]
+    if models and all(isinstance(model, Instance) and helpers.is_model_type(model.type) for model in models):
+        return TypeType.make_normalized(UnionType.make_union(models))
+    return ctx.default_attr_type

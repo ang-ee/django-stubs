@@ -1,0 +1,37 @@
+- case: deletion_candidates_expose_reverse_relation_metadata
+  main: |
+    from typing import Any
+    from typing_extensions import assert_type
+    from django.db.models.deletion import get_candidate_relations_to_delete
+    from django.db.models.fields.related import ForeignObject
+    from django.db.models.fields.reverse_related import ForeignObjectRel
+    from myapp.models import Record
+
+    for relation in get_candidate_relations_to_delete(Record._meta):
+        assert_type(relation, ForeignObjectRel)
+        assert_type(relation.field, ForeignObject[Any, Any])
+        assert_type(relation.parent_link, bool)
+  installed_apps:
+    - myapp
+  files:
+    - path: myapp/__init__.py
+    - path: myapp/models.py
+      content: |
+        from django.db import models
+        class Record(models.Model):
+            pass
+
+- case: deletion_errors_accept_covariant_model_iterables
+  main: |
+    from typing_extensions import assert_type
+    from django.contrib.contenttypes.models import ContentType
+    from django.db.models import Model
+    from django.db.models.deletion import ProtectedError, RestrictedError
+
+    rows = {ContentType()}
+    for row in ProtectedError("blocked", rows).protected_objects:
+        assert_type(row, Model)
+    RestrictedError("blocked", (ContentType(),))
+    ProtectedError("blocked", ["invalid"])  # E: List item 0 has incompatible type "str"; expected "Model"  [list-item]
+  installed_apps:
+    - django.contrib.contenttypes

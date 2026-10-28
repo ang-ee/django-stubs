@@ -90,7 +90,8 @@ class ReverseManyToOneDescriptor(Generic[_To]):
     """
 
     rel: ManyToOneRel
-    field: ForeignKey[_To, _To]
+    # _To names the related rows, not the parent targeted by this field.
+    field: ForeignKey[Model, Model | None]
     def __init__(self, rel: ManyToOneRel) -> None: ...
     @cached_property
     def related_manager_cls(self) -> type[RelatedManager[_To]]: ...
@@ -168,6 +169,8 @@ class ManyRelatedManager(Manager[_To], Generic[_To, _Through]):
     @override
     def __get__(self, instance: object, cls: type[Any] | None = None) -> Self: ...
     through: type[_Through]
+    target_field_name: str
+    def _get_target_ids(self, target_field_name: str, objs: Iterable[_To | int]) -> set[Any]: ...
     def __call__(self, *, manager: str) -> ManyRelatedManager[_To, _Through]: ...
     def add(
         self,

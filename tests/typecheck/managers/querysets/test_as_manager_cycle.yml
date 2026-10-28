@@ -1,0 +1,104 @@
+- case: queryset_as_manager_preserves_parent_manager_in_a_model_import_cycle
+  mypy_config: |
+    [mypy]
+    incremental = false
+  main: |
+    from typing_extensions import assert_type
+    from myapp.models import Record
+    from myapp.querysets import ChildQuerySet
+
+    assert_type(Record.objects.child_method(), int)
+    assert_type(Record.objects.parent_method(), str)
+    assert_type(Record.objects.get(), Record)
+    Record.objects.get().title = object()  # E: Incompatible types in assignment (expression has type "object", variable has type "str | int | Combinable")  [assignment]
+  installed_apps:
+    - myapp
+  files:
+    - path: myapp/__init__.py
+    - path: myapp/models.py
+      content: |
+        from django.db import models
+        from .querysets import ChildQuerySet
+
+        class Record(models.Model):
+            title = models.CharField()
+            objects = ChildQuerySet.as_manager()
+    - path: myapp/base.py
+      content: |
+        from typing import TYPE_CHECKING, TypeVar
+        from django.db import models
+        if TYPE_CHECKING:
+            from .models import Record
+
+        T = TypeVar("T", bound="Record")
+
+        class ParentQuerySet(models.QuerySet[T]):
+            def parent_method(self) -> str:
+                return "parent"
+    - path: myapp/querysets.py
+      content: |
+        from typing import TYPE_CHECKING, TypeVar
+        from .base import ParentQuerySet
+        if TYPE_CHECKING:
+            from .models import Record
+
+        T = TypeVar("T", bound="Record")
+
+        class ChildQuerySet(ParentQuerySet[T]):
+            def child_method(self) -> int:
+                return 1
+
+- case: queryset_as_manager_preserves_both_queryset_parent_managers
+  mypy_config: |
+    [mypy]
+    incremental = false
+  main: |
+    from typing_extensions import assert_type
+    from myapp.models import Record
+    from myapp.querysets import ChildQuerySet
+
+    assert_type(Record.objects.child_method(), int)
+    assert_type(Record.objects.parent_method(), str)
+    assert_type(Record.objects.other_method(), bool)
+    assert_type(Record.objects.get(), Record)
+    Record.objects.get().title = object()  # E: Incompatible types in assignment (expression has type "object", variable has type "str | int | Combinable")  [assignment]
+  installed_apps:
+    - myapp
+  files:
+    - path: myapp/__init__.py
+    - path: myapp/models.py
+      content: |
+        from django.db import models
+        from .querysets import ChildQuerySet
+
+        class Record(models.Model):
+            title = models.CharField()
+            objects = ChildQuerySet.as_manager()
+    - path: myapp/base.py
+      content: |
+        from typing import TYPE_CHECKING, TypeVar
+        from django.db import models
+        if TYPE_CHECKING:
+            from .models import Record
+
+        T = TypeVar("T", bound="Record")
+
+        class OtherQuerySet(models.QuerySet[T]):
+            def other_method(self) -> bool:
+                return True
+
+        class ParentQuerySet(models.QuerySet[T]):
+            def parent_method(self) -> str:
+                return "parent"
+    - path: myapp/querysets.py
+      content: |
+        from typing import TYPE_CHECKING, TypeVar
+        from .base import ParentQuerySet, OtherQuerySet
+        if TYPE_CHECKING:
+            from .models import Record
+
+        T = TypeVar("T", bound="Record")
+
+        class ChildQuerySet(ParentQuerySet[T], OtherQuerySet[T]):
+            def child_method(self) -> int:
+                return 1

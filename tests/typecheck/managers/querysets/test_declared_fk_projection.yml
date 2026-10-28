@@ -1,0 +1,48 @@
+-   case: abstract_declared_fk_attname_projection_preserves_target_pk_and_nullability
+    main: |
+        from typing import Any
+        from typing_extensions import assert_type
+        from django.db.models import QuerySet
+        from myapp.models import Abstract, Concrete
+
+        def project(rows: QuerySet[Abstract], concrete: QuerySet[Concrete]) -> None:
+            assert_type(rows.values_list("subject_id", flat=True).get(), Any)
+            assert_type(rows.values("subject_id").get()["subject_id"], Any)
+            assert_type(rows.values_list("target_id", flat=True).get(), int)
+            assert_type(rows.values("target_id").get()["target_id"], int)
+            assert_type(rows.values_list("nullable_target_id", flat=True).get(), int | None)
+            assert_type(rows.values("nullable_target_id").get()["nullable_target_id"], int | None)
+            wrong: str = rows.values_list("target_id", flat=True).get()  # E: Incompatible types in assignment (expression has type "int", variable has type "str")  [assignment]
+            rows.values_list("ordinary", flat=True)  # E: Cannot resolve keyword 'ordinary' into field. Choices are:   [misc]
+            rows.values_list("attribute", flat=True)  # E: Cannot resolve keyword 'attribute' into field. Choices are:   [misc]
+            rows.values_list("missing_id", flat=True)  # E: Cannot resolve keyword 'missing_id' into field. Choices are:   [misc]
+            rows.values_list("target_id__imaginary", flat=True)  # E: Cannot resolve keyword 'target_id' into field. Choices are:   [misc]
+            concrete.values_list("missing_id", flat=True)  # E: Cannot resolve keyword 'missing_id' into field. Choices are: id, subject, subject_id, target, target_id  [misc]
+    installed_apps:
+        - myapp
+    files:
+        -   path: myapp/__init__.py
+        -   path: myapp/models.py
+            content: |
+                from __future__ import annotations
+                from typing import Any
+                from django.db import models
+
+                class Target(models.Model):
+                    title = models.CharField(max_length=20)
+
+                # Static declarations may precede generated runtime columns.
+                class Abstract(models.Model):
+                    subject: models.ForeignKey[Any, Any]
+                    target: models.ForeignKey[Target, Target]
+                    nullable_target: models.ForeignKey[Target | None, Target | None]
+                    ordinary: int
+                    @property
+                    def attribute(self) -> int:
+                        return 1
+                    class Meta:
+                        abstract = True
+
+                class Concrete(Abstract):
+                    subject = models.ForeignKey(Target, on_delete=models.CASCADE, related_name="+")
+                    target = models.ForeignKey(Target, on_delete=models.CASCADE, related_name="+")

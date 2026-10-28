@@ -179,6 +179,7 @@ class ForeignObject(RelatedField[_ST, _GT]):
     requires_unique_target: bool
 
 class ForeignKey(ForeignObject[_ST, _GT]):
+    db_constraint: bool
     _pyi_private_set_type: Any | Combinable
     _pyi_private_get_type: Any
 
