@@ -1,0 +1,120 @@
+-   case: resolved_manager_factory_preserves_checker_and_semantic_contracts
+    mypy_config: |
+        [mypy]
+        plugins = mypy_django_plugin.main, adapter.py, mypy.plugins.proper_plugin
+    installed_apps:
+        - myapp
+    main: |
+        from typing_extensions import assert_type
+        from myapp.models import Row
+        from myapp.querysets import AuthoredQuerySet, Rows
+
+        assert_type(Row.records.filter(title='value').latest_of_each().tagged().get(), Row)
+        assert_type(Row().records.latest_of_each().tagged().get().title, str)
+        assert_type(Row.records.label(), str)
+        assert_type(Row.records.get_queryset(), Rows[Row])
+        assert_type(Row.other_records.other_only(), bytes)
+        assert_type(Row.records.tagged().get(), Row)
+        assert_type(Row.other_records.filter().other_only(), bytes)
+        assert_type(Row.overridden_records.label(), str)
+        assert_type(Row.overridden_records.filter(), AuthoredQuerySet[Row])
+        assert_type(Row.overridden_records.get_queryset(), AuthoredQuerySet[Row])
+        assert_type(Row.objects.filter().latest_of_each().tagged().get(), Row)
+        assert_type(Row.objects.label(), str)
+        assert_type(Row.overridden.filter(), AuthoredQuerySet[Row])
+        assert_type(Row.overridden.get_queryset(), AuthoredQuerySet[Row])
+        wrong: int = Row.records.get()  # E: Incompatible types in assignment (expression has type "Row", variable has type "int")  [assignment]
+        Row.records.tagged(1)  # E: Too many arguments for "tagged" of "Rows"  [call-arg]
+    files:
+        -   path: myapp/__init__.py
+        -   path: myapp/querysets.py
+            content: |
+                from django.db import models
+                from typing_extensions import Self, TypeVar
+
+                T = TypeVar('T', bound=models.Model, covariant=True)
+                class ParentQuerySet(models.QuerySet[T]):
+                    def latest_of_each(self) -> Self:
+                        return self
+                class Rows(ParentQuerySet[T]):
+                    def tagged(self) -> Self:
+                        return self
+                    def label(self) -> int:
+                        return 1
+                class AuthoredQuerySet(models.QuerySet[T]):
+                    pass
+        -   path: myapp/other_querysets.py
+            content: |
+                from django.db import models
+                from typing_extensions import TypeVar
+
+                T = TypeVar('T', bound=models.Model, covariant=True)
+                class Rows(models.QuerySet[T]):
+                    def other_only(self) -> bytes:
+                        return b'other'
+        -   path: myapp/models.py
+            content: |
+                from typing import Any, ClassVar
+                from typing_extensions import TypeVar, override
+                from django.db import models
+                from .querysets import AuthoredQuerySet, Rows
+                from .other_querysets import Rows as OtherRows
+
+                T = TypeVar('T', bound=models.Model, covariant=True)
+                class CustomManager(models.Manager[T]):
+                    def label(self) -> str:
+                        return 'authored'
+                class OverrideManager(CustomManager[T]):
+                    @override
+                    def filter(self, *args: Any, **kwargs: Any) -> AuthoredQuerySet[T]:
+                        return self.get_queryset().filter(*args, **kwargs)
+                    @override
+                    def get_queryset(self) -> AuthoredQuerySet[T]:
+                        return AuthoredQuerySet(self.model)
+                # Preserve this real collision with the factory's default name.
+                CustomManagerFromRows = 41
+                SemanticManager = CustomManager.from_queryset(Rows)
+                SemanticOverride = OverrideManager.from_queryset(Rows)
+                class Row(models.Model):
+                    title = models.CharField(max_length=30)
+                    objects = SemanticManager()
+                    overridden = SemanticOverride()
+                    records: ClassVar[Any]
+                    other_records: ClassVar[Any]
+                    overridden_records: ClassVar[Any]
+        -   path: adapter.py
+            content: |
+                from functools import partial
+                from mypy.nodes import TypeInfo
+                from mypy.plugin import AttributeContext, Plugin
+                from mypy.types import Instance
+                from mypy_django_plugin.lib import helpers
+                from mypy_django_plugin.transformers.managers import create_manager_info_from_queryset
+
+                class Adapter(Plugin):
+                    def hook(self, fullname):
+                        owner, _, name = fullname.rpartition('.')
+                        if owner == 'myapp.models.Row' and name in {'records', 'other_records', 'overridden_records'}:
+                            return partial(self.manager, name=name)
+                    get_attribute_hook = hook
+                    get_class_attribute_hook = hook
+
+                    def manager(self, ctx: AttributeContext, *, name):
+                        manager = self.lookup_fully_qualified(
+                            'myapp.models.OverrideManager' if name == 'overridden_records'
+                            else 'myapp.models.CustomManager'
+                        ).node
+                        queryset = self.lookup_fully_qualified(
+                            'myapp.other_querysets.Rows' if name == 'other_records' else 'myapp.querysets.Rows'
+                        ).node
+                        row = self.lookup_fully_qualified('myapp.models.Row').node
+                        assert isinstance(manager, TypeInfo) and isinstance(queryset, TypeInfo) and isinstance(row, TypeInfo)
+                        module = ctx.api.modules[manager.module_name]
+                        authored_collision = module.names['CustomManagerFromRows']
+                        generated = create_manager_info_from_queryset(module, manager, queryset)
+                        assert create_manager_info_from_queryset(module, manager, queryset) is generated
+                        assert module.names['CustomManagerFromRows'] is authored_collision
+                        return helpers.fill_manager(generated, Instance(row, []))
+
+                def plugin(version):
+                    return Adapter

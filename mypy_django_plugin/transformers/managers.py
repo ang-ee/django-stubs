@@ -11,6 +11,7 @@ from mypy.nodes import (
     FuncBase,
     FuncDef,
     MemberExpr,
+    MypyFile,
     Node,
     OverloadedFuncDef,
     PlaceholderNode,
@@ -239,56 +240,82 @@ def create_manager_info_from_from_queryset_call(
     else:
         manager_name = f"{base_manager_info.name}From{queryset_info.name}"
 
-    # Always look in global scope, as that's where we'll declare dynamic manager classes
-    manager_sym = api.globals.get(manager_name)
-    if (
-        manager_sym is not None
-        and isinstance(manager_sym.node, TypeInfo)
-        and manager_sym.node.has_base(base_manager_info.fullname)
-        and manager_sym.node.metadata.get("django", {}).get("from_queryset_manager") == queryset_info.fullname
-    ):
-        # Reuse an identical, already generated, manager
-        new_manager_info = manager_sym.node
-    else:
-        # Create a new `TypeInfo` instance for the manager type
-        try:
-            new_manager_info = create_manager_class(
-                api=api,
-                base_manager_info=base_manager_info,
-                name=manager_name,
-                line=call_expr.line,
-                with_unique_name=name is not None and name != manager_name,
-            )
-        except helpers.IncompleteDefnException:
-            return None
+    try:
+        return create_manager_info_from_queryset(
+            api.modules[api.cur_mod_id],
+            base_manager_info,
+            queryset_info,
+            manager_name=manager_name,
+            name=name,
+            line=call_expr.line,
+        )
+    except helpers.IncompleteDefnException:
+        return None
 
+
+def create_manager_info_from_queryset(
+    module: MypyFile,
+    base_manager_info: TypeInfo,
+    queryset_info: TypeInfo,
+    *,
+    manager_name: str | None = None,
+    name: str | None = None,
+    line: int = -1,
+) -> TypeInfo:
+    """Build a native ``from_queryset`` manager from already resolved types.
+
+    The explicit module owns the generated symbol in semantic analysis or a
+    checker hook. Identical factories reuse that symbol, including when names
+    collide with authored symbols or other queryset classes. Incomplete manager
+    type variables raise ``IncompleteDefnException`` for the caller to handle.
+    ``name`` additionally binds a module-level assignment's authored alias.
+    """
+    if manager_name is None:
+        manager_name = f"{base_manager_info.name}From{queryset_info.name}"
+    for symbol in module.names.values():
+        candidate = symbol.node
+        if not isinstance(candidate, TypeInfo) or candidate.module_name != module.fullname:
+            continue
+        metadata = candidate.metadata.get("django", {})
+        if (
+            candidate.has_base(base_manager_info.fullname)
+            and metadata.get("from_queryset_manager") == queryset_info.fullname
+            and metadata.get("from_queryset_manager_name", candidate.name) == manager_name
+        ):
+            new_manager_info = candidate
+            break
+    else:
+        new_manager_info = create_manager_class(
+            module=module,
+            base_manager_info=base_manager_info,
+            name=manager_name,
+            line=line,
+            with_unique_name=name is None or name != manager_name,
+        )
         populate_manager_from_queryset(new_manager_info, queryset_info)
+        # Keep the native factory name when the module needed a unique symbol.
+        helpers.get_django_metadata(new_manager_info)["from_queryset_manager_name"] = manager_name
         register_dynamically_created_manager(
             fullname=new_manager_info.fullname,
             manager_name=manager_name,
             manager_base=base_manager_info,
         )
 
-    # Add the new manager to the current module
-    # TODO: use proper SemanticAnalyzer API for that.
-    module = api.modules[api.cur_mod_id]
     if name is not None and name != new_manager_info.name:
-        # Unless names are equal, there's 2 symbol names that needs the manager info
         module.names[name] = SymbolTableNode(GDEF, new_manager_info, plugin_generated=True)
-
     module.names[new_manager_info.name] = SymbolTableNode(GDEF, new_manager_info, plugin_generated=True)
     return new_manager_info
 
 
 def create_manager_class(
-    api: SemanticAnalyzer, base_manager_info: TypeInfo, name: str, line: int, with_unique_name: bool
+    module: MypyFile, base_manager_info: TypeInfo, name: str, line: int, with_unique_name: bool
 ) -> TypeInfo:
     # If any of the type vars are undefined we need to defer. This is handled by the caller
     if any(has_placeholder(type_var) for type_var in base_manager_info.defn.type_vars):
         raise helpers.IncompleteDefnException
 
     return helpers.build_reparametrized_subclass(
-        api.modules[api.cur_mod_id], base_manager_info, name, unique_name=with_unique_name, line=line
+        module, base_manager_info, name, unique_name=with_unique_name, line=line
     )
 
 
@@ -312,7 +339,10 @@ def populate_manager_from_queryset(manager_info: TypeInfo, queryset_info: TypeIn
                 continue
             # private, magic methods are not copied
             # https://github.com/django/django/blob/5.0.4/django/db/models/manager.py#L101
-            if name.startswith("_"):
+            owner = manager_info.get_containing_type_info(name)
+            if name.startswith("_") or (
+                owner is not None and "from_queryset_manager" not in owner.metadata.get("django", {})
+            ):
                 continue
             # Insert the queryset method name as a class member. Note that the type of
             # the method is set as Any. Figuring out the type is the job of the
@@ -333,6 +363,14 @@ def populate_manager_from_queryset(manager_info: TypeInfo, queryset_info: TypeIn
     # class. The actual type of these methods are resolved in
     # resolve_manager_method.
     for method_name in (*MANAGER_METHODS_RETURNING_QUERYSET, "get_queryset"):
+        owner = manager_info.get_containing_type_info(method_name)
+        if (
+            owner is not None
+            and owner.fullname not in {fullnames.BASE_MANAGER_CLASS_FULLNAME, fullnames.MANAGER_CLASS_FULLNAME}
+            and "from_queryset_manager" not in owner.metadata.get("django", {})
+        ):
+            # Django keeps authored manager methods ahead of queryset copies.
+            continue
         helpers.add_new_sym_for_info(
             manager_info,
             name=method_name,
@@ -369,7 +407,7 @@ def _get_or_create_manager_class_for_queryset(
         new_manager_info = existing_sym.node
     else:
         new_manager_info = create_manager_class(
-            api=semanal_api,
+            module=current_module,
             base_manager_info=base_manager_info,
             name=name,
             line=queryset_info.line,

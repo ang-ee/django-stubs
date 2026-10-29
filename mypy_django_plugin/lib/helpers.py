@@ -74,6 +74,7 @@ class DjangoTypeMetadata(TypedDict, total=False):
     is_abstract_model: bool
     is_annotated_model: bool
     from_queryset_manager: str
+    from_queryset_manager_name: str
     reverse_managers: dict[str, str]
     m2m_throughs: dict[str, str]
     m2m_managers: dict[str, str]
