@@ -145,6 +145,21 @@ class DjangoContext:
         """Resolve a model's manager through Django's native Options selector."""
         return model_cls._meta.default_manager if name == "_default_manager" else model_cls._meta.base_manager
 
+    def get_manager_class(self, manager_info: TypeInfo) -> type[models.Manager[Any]] | None:
+        """Find a known manager ancestor using Django's registered manager instances.
+
+        Generated classes have different static and runtime module identities;
+        an authored ancestor still witnesses its own runtime method definitions.
+        Unknown authored ancestors remain unresolved.
+        """
+        for info in manager_info.mro:
+            for model in self.apps_registry.get_models(include_auto_created=True, include_swapped=True):
+                for manager in model._meta.managers:
+                    for manager_class in type(manager).__mro__:
+                        if helpers.get_class_fullname(manager_class) == info.fullname:
+                            return manager_class
+        return None
+
     def get_model_fullname(self, model_cls: type[Model]) -> str:
         """Return the declaration identity used to accept model values.
 

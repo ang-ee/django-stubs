@@ -597,7 +597,7 @@ class AddManagers(ModelClassInitializer):
         if not isinstance(expr, CallExpr) or not isinstance(expr.callee, CallExpr):
             return None
 
-        return create_manager_info_from_from_queryset_call(self.api, expr.callee)
+        return create_manager_info_from_from_queryset_call(self.api, expr.callee, django_context=self.django_context)
 
 
 class AddManagerAttribute(ModelClassInitializer):

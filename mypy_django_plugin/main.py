@@ -360,7 +360,12 @@ class NewSemanalDjangoPlugin(Plugin):
         if info.has_base(
             fullnames.BASE_MANAGER_CLASS_FULLNAME
         ) and "from_queryset_manager" in helpers.get_django_metadata(info):
-            return partial(resolve_manager_method, method_name=attr_name, manager_type_info=info)
+            return partial(
+                resolve_manager_method,
+                method_name=attr_name,
+                manager_type_info=info,
+                django_context=self.django_context,
+            )
 
         if info.has_base(fullnames.STR_PROMISE_FULLNAME):
             return resolve_str_promise_attribute
@@ -388,7 +393,7 @@ class NewSemanalDjangoPlugin(Plugin):
         if method_name == "from_queryset":
             info = self._get_typeinfo_or_none(class_name)
             if info and info.has_base(fullnames.BASE_MANAGER_CLASS_FULLNAME):
-                return create_new_manager_class_from_from_queryset_method
+                return partial(create_new_manager_class_from_from_queryset_method, django_context=self.django_context)
         return None
 
     @cached_property

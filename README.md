@@ -1,7 +1,7 @@
 # angee-django-stubs
 
 Angee's published Django typing fork, based on
-[`3596899b`](https://github.com/ang-ee/django-stubs/commit/3596899b3620c1f8f6d27b0f9cb70e69d8c554b1),
+[`b83acdf3`](https://github.com/ang-ee/django-stubs/commit/b83acdf3527438da531cfab6a02f0c8265b459bb),
 provides the native hooks used by django-compose. Install the `compatible-mypy`
 extra to obtain the matching `angee-mypy` and `angee-django-stubs-ext` releases.
 The native `mypy_django_plugin` and `django_stubs_ext` imports are unchanged.
