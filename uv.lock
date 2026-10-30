@@ -16,7 +16,7 @@ excludes = ["mypy"]
 
 [[package]]
 name = "angee-django-stubs"
-version = "6.1.2.post1"
+version = "6.1.2.post2"
 source = { editable = "." }
 dependencies = [
     { name = "angee-django-stubs-ext" },

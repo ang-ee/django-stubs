@@ -1,13 +1,15 @@
 # angee-django-stubs
 
 Angee's published Django typing fork, based on
-[`b83acdf3`](https://github.com/ang-ee/django-stubs/commit/b83acdf3527438da531cfab6a02f0c8265b459bb),
+[`48aa0bfe`](https://github.com/ang-ee/django-stubs/commit/48aa0bfe9eaab6508d7836be9ed3809e368b7d27),
 provides the native hooks used by django-compose. Install the `compatible-mypy`
 extra to obtain the matching `angee-mypy` and `angee-django-stubs-ext` releases.
 The native `mypy_django_plugin` and `django_stubs_ext` imports are unchanged.
 Use a clean environment without the upstream `mypy`, `django-stubs`, or
 `django-stubs-ext` distributions, which provide the same files.
-The upstream documentation and attribution follow.
+Version `6.1.2.post2` preserves independent queryset types in heterogeneous
+`Prefetch` calls and recognizes declared foreign keys on abstract generated-row
+contracts. The upstream documentation and attribution follow.
 
 <img src="https://raw.githubusercontent.com/typeddjango/django-stubs/master/logo.svg" alt="django-stubs">
 
