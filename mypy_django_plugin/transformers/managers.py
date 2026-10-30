@@ -278,7 +278,8 @@ def create_manager_info_from_queryset(
             continue
         metadata = candidate.metadata.get("django", {})
         if (
-            candidate.has_base(base_manager_info.fullname)
+            candidate.bases
+            and candidate.bases[0].type.fullname == base_manager_info.fullname
             and metadata.get("from_queryset_manager") == queryset_info.fullname
             and metadata.get("from_queryset_manager_name", candidate.name) == manager_name
         ):
