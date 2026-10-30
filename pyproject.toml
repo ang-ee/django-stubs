@@ -1,6 +1,6 @@
 [project]
 name = "angee-django-stubs"
-version = "6.1.2.post2"
+version = "6.1.2.post3"
 description = "Angee's Django stubs with native composition typing hooks"
 readme = "README.md"
 license = "MIT"
