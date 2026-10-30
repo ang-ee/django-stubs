@@ -101,14 +101,10 @@ def fill_descriptor_types_for_related_field(ctx: FunctionContext, django_context
                     )
                     helpers.add_new_sym_for_info(derived_model_info, name=current_field.name, sym_type=derived_fk_type)
 
-    related_model = related_model_cls
-    related_model_to_set = related_model_cls
-    if related_model_to_set._meta.proxy_for_model is not None:
-        related_model_to_set = related_model_to_set._meta.proxy_for_model
-
     typechecker_api = helpers.get_typechecker_api(ctx)
-
-    related_model_info = helpers.lookup_class_typeinfo(typechecker_api, related_model)
+    related_model_to_set_info, related_model_info = django_context.get_related_model_typeinfos(
+        typechecker_api, related_model_cls
+    )
     related_model_type: ProperType
     if related_model_info is None:
         # maybe no type stub
@@ -116,7 +112,6 @@ def fill_descriptor_types_for_related_field(ctx: FunctionContext, django_context
     else:
         related_model_type = Instance(related_model_info, [])
 
-    related_model_to_set_info = django_context.lookup_model_typeinfo(typechecker_api, related_model_to_set)
     related_model_to_set_type: ProperType
     if related_model_to_set_info is None:
         # maybe no type stub
