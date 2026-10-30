@@ -171,6 +171,19 @@ class DjangoContext:
     def lookup_model_typeinfo(self, api: TypeChecker | SemanticAnalyzer, model_cls: type[Model]) -> TypeInfo | None:
         return helpers.lookup_fully_qualified_typeinfo(api, self.get_model_fullname(model_cls))
 
+    def get_related_model_typeinfos(
+        self, api: TypeChecker | SemanticAnalyzer, model_cls: type[Model]
+    ) -> tuple[TypeInfo | None, TypeInfo | None]:
+        """Resolve a forward relation's accepted values and registered read result.
+
+        Proxy relations accept their underlying model. Setter lookup retains the
+        context's declaration mapping; getters retain the registered model itself.
+        """
+        setter_model = model_cls._meta.proxy_for_model or model_cls
+        return self.lookup_model_typeinfo(api, setter_model), helpers.lookup_fully_qualified_typeinfo(
+            api, helpers.get_class_fullname(model_cls)
+        )
+
     def get_model_class_by_fullname(self, fullname: str) -> type[Model] | None:
         """Returns None if Model is abstract"""
         module, _, model_cls_name = fullname.rpartition(".")
@@ -316,10 +329,7 @@ class DjangoContext:
                         expected_types[field_name] = AnyType(TypeOfAny.from_error)
                         continue
 
-                    if related_model._meta.proxy_for_model is not None:
-                        related_model = related_model._meta.proxy_for_model
-
-                    related_model_info = self.lookup_model_typeinfo(api, related_model)
+                    related_model_info, _ = self.get_related_model_typeinfos(api, related_model)
                     if related_model_info is None:
                         expected_types[field_name] = AnyType(TypeOfAny.unannotated)
                         continue
