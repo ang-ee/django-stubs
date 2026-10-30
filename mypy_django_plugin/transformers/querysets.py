@@ -42,6 +42,7 @@ from mypy.types import (
     get_proper_type,
 )
 from mypy.types import Type as MypyType
+from mypy.types_utils import remove_optional
 
 from mypy_django_plugin.django.context import DjangoContext, LookupsAreUnsupported, get_field_type_from_model_type_info
 from mypy_django_plugin.lib import fullnames, helpers
@@ -837,10 +838,29 @@ def check_valid_prefetch_related_lookup(
     is_generic_prefetch: bool = False,
 ) -> bool:
     """Check if a lookup string resolve to something that can be prefetched"""
-    current_model_cls = django_model.cls
+    current_model_cls: type[Model] | str = django_model.cls
     contenttypes_installed = django_context.apps_registry.is_installed("django.contrib.contenttypes")
     for through_attr in lookup.split(LOOKUP_SEP):
         rel_obj_descriptor = getattr(current_model_cls, through_attr, None)
+        if (
+            rel_obj_descriptor is None
+            and not is_generic_prefetch
+            and isinstance(current_model_cls, type)
+            and current_model_cls._meta.abstract
+        ):
+            model_info = django_context.lookup_model_typeinfo(helpers.get_typechecker_api(ctx), current_model_cls)
+            field_type = get_field_type_from_model_type_info(model_info, through_attr)
+            if field_type is not None and field_type.type.has_base(fullnames.FOREIGN_KEY_FULLNAME):
+                mapped = helpers.get_field_type_args(field_type)
+                assert mapped is not None
+                related = get_proper_type(remove_optional(mapped.get))
+                if isinstance(related, AnyType):
+                    return True
+                if isinstance(related, Instance) and (
+                    target := helpers.DjangoModel.from_model_type(related, django_context)
+                ):
+                    current_model_cls = target.cls
+                    continue
         if rel_obj_descriptor is None:
             # If current_model_cls is "self", we cannot use `__name__` and want "self".
             model_name = getattr(current_model_cls, "__name__", current_model_cls)
@@ -940,7 +960,7 @@ def extract_prefetch_related_annotations(ctx: MethodContext, django_context: Dja
         and ctx.arg_types
         and ctx.arg_types[0]
         # Only process the correct overload, i.e.
-        #     def prefetch_related(self, *lookups: str | Prefetch[_PrefetchedQuerySetT, _ToAttrT]) -> Self: ...
+        #     def prefetch_related(self, *lookups: str | Prefetch[str, QuerySet[Model], str]) -> Self: ...
         and None not in ctx.callee_arg_names
     ):
         return ctx.default_return_type

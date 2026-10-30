@@ -18,8 +18,9 @@ from django.db.models.lookups import Exact, In
 from django.db.models.sql.query import Query
 from mypy.nodes import Var
 from mypy.typeanal import make_optional_type
-from mypy.types import AnyType, Instance, NoneType, ProperType, TypeOfAny, UnionType, get_proper_type
+from mypy.types import AnyType, Instance, ProperType, TypeOfAny, UnionType, get_proper_type
 from mypy.types import Type as MypyType
+from mypy.types_utils import remove_optional
 
 from mypy_django_plugin.exceptions import UnregisteredModelError
 from mypy_django_plugin.lib import fullnames, helpers
@@ -634,13 +635,7 @@ class DjangoContext:
         api = helpers.get_typechecker_api(ctx)
         value_type: MypyType
         if field_type.type.has_base(fullnames.FOREIGN_KEY_FULLNAME):
-            related = mapped.get
-            if isinstance(related, UnionType):
-                related = get_proper_type(
-                    UnionType.make_union(
-                        [item for item in related.items if not isinstance(get_proper_type(item), NoneType)]
-                    )
-                )
+            related = get_proper_type(remove_optional(mapped.get))
             if isinstance(related, AnyType):
                 value_type = related
                 if parts and parts[-1] not in Field().get_lookups():
