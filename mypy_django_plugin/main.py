@@ -407,9 +407,9 @@ class NewSemanalDjangoPlugin(Plugin):
             # The implicit `pk` field type depends on `DEFAULT_AUTO_FIELD`
             "DEFAULT_AUTO_FIELD": self.django_context.settings.DEFAULT_AUTO_FIELD,
             "django_version": _package_version("django"),
-            "django_stubs_version": _package_version("django-stubs"),
+            "django_stubs_version": _package_version("angee-django-stubs"),
         }
-        if (django_stubs_ext_version := _package_version("django-stubs-ext")) is not None:
+        if (django_stubs_ext_version := _package_version("angee-django-stubs-ext")) is not None:
             extra_data["django_stubs_ext_version"] = django_stubs_ext_version
         return self.plugin_config.to_json(extra_data)
 

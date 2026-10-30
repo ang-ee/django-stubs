@@ -1,3 +1,14 @@
+# angee-django-stubs
+
+Angee's published Django typing fork, based on
+[`3596899b`](https://github.com/ang-ee/django-stubs/commit/3596899b3620c1f8f6d27b0f9cb70e69d8c554b1),
+provides the native hooks used by django-compose. Install the `compatible-mypy`
+extra to obtain the matching `angee-mypy` and `angee-django-stubs-ext` releases.
+The native `mypy_django_plugin` and `django_stubs_ext` imports are unchanged.
+Use a clean environment without the upstream `mypy`, `django-stubs`, or
+`django-stubs-ext` distributions, which provide the same files.
+The upstream documentation and attribution follow.
+
 <img src="https://raw.githubusercontent.com/typeddjango/django-stubs/master/logo.svg" alt="django-stubs">
 
 [![test](https://github.com/typeddjango/django-stubs/actions/workflows/test.yml/badge.svg?branch=master&event=push)](https://github.com/typeddjango/django-stubs/actions/workflows/test.yml)
@@ -16,7 +27,7 @@ This package contains [type stubs](https://www.python.org/dev/peps/pep-0561/) an
 ## Installation
 
 ```bash
-pip install 'django-stubs[compatible-mypy]'
+pip install 'angee-django-stubs[compatible-mypy]'
 ```
 
 To make mypy aware of the plugin, you need to add
@@ -172,7 +183,7 @@ This happens because these Django classes do not support [`__class_getitem__`](h
    Install it:
 
    ```bash
-   pip install django-stubs-ext  # as a production dependency
+   pip install angee-django-stubs-ext  # as a production dependency
    ```
 
    And then place in your top-level settings:

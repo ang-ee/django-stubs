@@ -1,7 +1,7 @@
 [project]
-name = "django-stubs"
+name = "angee-django-stubs"
 version = "6.1.2"
-description = "Mypy stubs for Django"
+description = "Angee's Django stubs with native composition typing hooks"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE.md"]
@@ -10,10 +10,7 @@ authors = [
   { name = "Maksim Kurnikov", email = "maxim.kurnikov@gmail.com" },
 ]
 maintainers = [
-  { name = "Marti Raudsepp", email = "marti@juffo.org" },
-  { name = "Nikita Sobolev", email = "mail@sobolevn.me" },
-  { name = "Petter Friberg", email = "petter_friberg@hotmail.com" },
-  { name = "Adam Johnson", email = "me@adamj.eu" },
+  { name = "Angee, Inc.", email = "hi@angee.ai" },
 ]
 classifiers = [
   "Operating System :: OS Independent",
@@ -29,14 +26,14 @@ classifiers = [
 ]
 dependencies = [
   "django",
-  "django-stubs-ext>=6.0.2",
+  "angee-django-stubs-ext==6.1.2",
   # Types:
   "types-pyyaml",
   "typing-extensions>=4.11.0",
 ]
 
 [project.optional-dependencies]
-compatible-mypy = ["mypy>=1.13,<2.5"]
+compatible-mypy = ["angee-mypy==2.1.0"]
 oracle = ["oracledb"]
 redis = ["redis", "types-redis"]
 
@@ -56,7 +53,7 @@ tests = [
   "jinja2==3.1.6",
   "pyyaml==6.0.3",
   # typing:
-  "django-stubs[compatible-mypy,oracle,redis]",
+  "angee-django-stubs[compatible-mypy,oracle,redis]",
 ]
 pyright = [
   "pyright==1.1.414",
@@ -78,13 +75,19 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/typeddjango/django-stubs"
+Homepage = "https://github.com/ang-ee/django-stubs"
 Funding = "https://github.com/sponsors/typeddjango"
-"Release notes" = "https://github.com/typeddjango/django-stubs/releases"
+"Release notes" = "https://github.com/ang-ee/django-stubs/releases"
+Upstream = "https://github.com/typeddjango/django-stubs"
+
+[tool.uv]
+# pytest-mypy-plugins imports the mypy modules supplied by angee-mypy.
+exclude-dependencies = ["mypy"]
 
 [tool.uv.sources]
-django-stubs = { workspace = true }
-django-stubs-ext = { workspace = true }
+angee-django-stubs = { workspace = true }
+angee-django-stubs-ext = { workspace = true }
+angee-mypy = { git = "https://github.com/ang-ee/mypy.git", rev = "7f29c5b0e52e9061d76fd33bee4a80b48fb71534" }
 
 [tool.uv.workspace]
 members = ["ext"]

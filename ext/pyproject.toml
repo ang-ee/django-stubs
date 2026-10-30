@@ -1,17 +1,14 @@
 [project]
-name = "django-stubs-ext"
+name = "angee-django-stubs-ext"
 # NB! For clarity, keep version major.minor.patch in sync with django-stubs.
 # It's fine to skip django-stubs-ext releases, but when doing a release, update this to newest django-stubs version.
 version = "6.1.2"
-description = "Monkey-patching and extensions for django-stubs"
+description = "Runtime extensions for Angee's Django stubs"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE.md"]
 maintainers = [
-  { name = "Marti Raudsepp", email = "marti@juffo.org" },
-  { name = "Nikita Sobolev", email = "mail@sobolevn.me" },
-  { name = "Petter Friberg", email = "petter_friberg@hotmail.com" },
-  { name = "Adam Johnson", email = "me@adamj.eu" },
+  { name = "Angee, Inc.", email = "hi@angee.ai" },
 ]
 authors = [
   { name = "Simula Proxy" },
@@ -35,9 +32,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/typeddjango/django-stubs"
+Homepage = "https://github.com/ang-ee/django-stubs"
 Funding = "https://github.com/sponsors/typeddjango"
-"Release notes" = "https://github.com/typeddjango/django-stubs/releases"
+"Release notes" = "https://github.com/ang-ee/django-stubs/releases"
+Upstream = "https://github.com/typeddjango/django-stubs"
 
 [build-system]
 requires = ["uv_build>=0.12.0,<0.13.0"]
