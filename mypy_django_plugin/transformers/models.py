@@ -483,8 +483,13 @@ class AddManagers(ModelClassInitializer):
             return
 
         assert manager_info is not None
-        # Reparameterize dynamically created manager with model type
-        manager_type = helpers.fill_manager(manager_info, Instance(self.model_classdef.info, []))
+        # Preserve abstract Self across semantic revisits; concrete manager
+        # access remains specialized to its explicit row.
+        assert self.model_classdef.info.self_type is not None
+        model_type = (
+            self.model_classdef.info.self_type if self.is_model_abstract else Instance(self.model_classdef.info, [])
+        )
+        manager_type = helpers.fill_manager(manager_info, model_type)
         self.add_new_var_to_model_class(manager_name, manager_type, is_classvar=True)
 
     @override

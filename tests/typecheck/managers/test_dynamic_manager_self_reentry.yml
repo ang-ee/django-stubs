@@ -1,0 +1,81 @@
+- case: selected_dynamic_manager_keeps_self_on_semantic_reentry
+  mypy_config: |
+    [mypy]
+    plugins = selected_models.py, mypy.plugins.proper_plugin
+  main: |
+    from typing_extensions import assert_type
+    from myapp.models import Concrete, Left, Other, Right, Scoped
+
+    class Local(Left, Scoped, Right):
+        class Meta:
+            app_label = "myapp"
+
+    assert_type(Concrete.objects.tagged().get(), Concrete)
+    assert_type(Local.objects.tagged().get(), Local)
+    wrong: Other = Local.objects.get()  # E: Incompatible types in assignment (expression has type "Local", variable has type "Other")  [assignment]
+    Local.objects.missing()  # E: "ManagerFromRows[Local]" has no attribute "missing"  [attr-defined]
+  installed_apps:
+    - myapp
+  files:
+    - path: myapp/__init__.py
+    - path: myapp/models.py
+      content: |
+        from typing import TypeVar
+        from typing_extensions import Self
+        from django.db import models
+
+        T = TypeVar("T", bound=models.Model)
+        class Rows(models.QuerySet[T]):
+            def tagged(self) -> Self:
+                return self
+        Factory = models.Manager.from_queryset(Rows)
+        class Parent(models.Model):
+            objects = models.Manager()
+            reference = models.ForeignKey("Other", on_delete=models.CASCADE)
+            class Meta:
+                abstract = True
+        class Left(Parent):
+            class Meta:
+                abstract = True
+        class Scoped(Parent):
+            objects = Factory()
+            class Meta:
+                abstract = True
+        class Right(Parent):
+            class Meta:
+                abstract = True
+        class Concrete(Left, Scoped, Right):
+            pass
+        class Other(models.Model):
+            pass
+    - path: selected_models.py
+      content: |
+        from mypy_django_plugin.django.context import DjangoContext
+        from mypy_django_plugin.main import NewSemanalDjangoPlugin
+        from mypy_django_plugin.transformers.models import AddManagers
+        class SelectedContext(DjangoContext):
+            def get_model_class_by_fullname(self, fullname):
+                from myapp.models import Concrete, Factory, Rows
+                assert isinstance(Concrete._default_manager, Factory)
+                assert Concrete._default_manager.model is Concrete
+                assert isinstance(Concrete._default_manager.get_queryset(), Rows)
+                if fullname in {"myapp.models.Left", "myapp.models.Scoped", "myapp.models.Right"}:
+                    return Concrete
+                return super().get_model_class_by_fullname(fullname)
+        class SelectedModels(NewSemanalDjangoPlugin):
+            def get_base_class_hook(self, fullname):
+                native = super().get_base_class_hook(fullname)
+                if native is None:
+                    return None
+                def run(ctx):
+                    native(ctx)
+                    if ctx.cls.name == "Left":
+                        # Native semantic retries revisit this owner after
+                        # earlier manager facts have already been synthesized.
+                        AddManagers(ctx, self.django_context).run()
+                return run
+            def __init__(self, options):
+                super().__init__(options)
+                self.django_context = SelectedContext(self.plugin_config.django_settings_module)
+        def plugin(version):
+            return SelectedModels
