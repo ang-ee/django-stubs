@@ -1,0 +1,11 @@
+- case: manager_routing_hints_follow_native_db_manager_contract
+  main: |
+    from typing_extensions import assert_type
+    from django.db.models import Manager, Model
+    from django.contrib.auth.models import User
+
+    manager = Manager[User]()
+    assert_type(manager._hints, dict[str, Model])
+    manager._hints = {"instance": User()}
+    assert_type(manager.db_manager("replica", hints=manager._hints), Manager[User])
+    manager._hints = {"instance": 1}  # E: Dict entry 0 has incompatible type "str": "int"; expected "str": "Model"  [dict-item]
