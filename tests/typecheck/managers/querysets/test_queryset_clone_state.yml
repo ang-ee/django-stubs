@@ -5,6 +5,10 @@
     from django.db.models import QuerySet
 
     rows = QuerySet[User]()
+    assert_type(rows._db, str | None)
+    rows._db = 'replica'
+    rows._db = None
+    rows._db = 1  # E: Incompatible types in assignment (expression has type "int", variable has type "str | None")  [assignment]
     assert_type(rows._fields, tuple[str, ...] | None)
     rows._fields = ('id', 'username')
     rows._fields = None

@@ -81,6 +81,7 @@ class QuerySet(AltersData, _SupportsContains[object], Iterable[_Row], Sized, Gen
     model: type[_Model]
     query: Query
     _iterable_class: type[BaseIterable[Any]]
+    _db: str | None
     _fields: tuple[str, ...] | None
     _result_cache: list[_Row] | None
     def __init__(
