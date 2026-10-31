@@ -16,8 +16,30 @@
             assert_type(result.get().audit_rows, list[Audit])
             rows.prefetch_related(Prefetch("audit_set", queryset=audits), Prefetch("left", queryset=people))
 
+            # A from_queryset factory preserves native heterogeneous Prefetch
+            # inputs, exact to_attr rows and the custom queryset receiver.
+            managed = Pair.objects.prefetch_related(
+                Prefetch("audit_set", queryset=audits, to_attr="audit_rows"),
+                *(Prefetch(side, queryset=people) for side in ("left", "right")),
+            )
+            assert_type(managed.tagged().get().audit_rows, list[Audit])
+            assert_type(Pair.objects.prefetch_related(None).tagged().get(), Pair)
+            wrong: list[Person] = managed.get().audit_rows  # E: Incompatible types in assignment (expression has type "list[Audit]", variable has type "list[Person]")  [assignment]
+            Pair.objects.prefetch_related("typo")  # E: Cannot find "typo" on "Pair" object, "typo" is an invalid parameter to "prefetch_related()"  [misc]
+
         def raw(rows: RawQuerySet[Pair], people: QuerySet[P], audits: QuerySet[Audit]) -> None:
             rows.prefetch_related(Prefetch("audit_set", queryset=audits), Prefetch("left", queryset=people))
+
+            # A from_queryset factory preserves native heterogeneous Prefetch
+            # inputs, exact to_attr rows and the custom queryset receiver.
+            managed = Pair.objects.prefetch_related(
+                Prefetch("audit_set", queryset=audits, to_attr="audit_rows"),
+                *(Prefetch(side, queryset=people) for side in ("left", "right")),
+            )
+            assert_type(managed.tagged().get().audit_rows, list[Audit])
+            assert_type(Pair.objects.prefetch_related(None).tagged().get(), Pair)
+            wrong: list[Person] = managed.get().audit_rows  # E: Incompatible types in assignment (expression has type "list[Audit]", variable has type "list[Person]")  [assignment]
+            Pair.objects.prefetch_related("typo")  # E: Cannot find "typo" on "Pair" object, "typo" is an invalid parameter to "prefetch_related()"  [misc]
 
         Prefetch("left", queryset=1)  # E: Argument "queryset" to "Prefetch" has incompatible type "int"; expected "QuerySet[Model, Model] | None"  [arg-type]
     installed_apps:
@@ -26,12 +48,21 @@
         -   path: myapp/__init__.py
         -   path: myapp/models.py
             content: |
+                from typing import TypeVar
+                from typing_extensions import Self
                 from django.db import models
+
+                T = TypeVar("T", bound=models.Model)
+                class PairRows(models.QuerySet[T]):
+                    def tagged(self) -> Self:
+                        return self
+                PairManager = models.Manager.from_queryset(PairRows)
 
                 class Person(models.Model):
                     pass
 
                 class Pair(models.Model):
+                    objects = PairManager()
                     left = models.ForeignKey(Person, on_delete=models.CASCADE, related_name="+")
                     right = models.ForeignKey(Person, on_delete=models.CASCADE, related_name="+")
 

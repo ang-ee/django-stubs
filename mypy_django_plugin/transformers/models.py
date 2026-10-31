@@ -413,8 +413,10 @@ class AddRelatedModelsId(ModelClassInitializer):
 
             # Django creates the forward OneToOneField for multi-table
             # inheritance without an assignment in the child's source body.
-            if field.auto_created and field.remote_field.parent_link and not (
-                self.model_classdef.info.has_readable_member(field.name)
+            if (
+                field.auto_created
+                and field.remote_field.parent_link
+                and not (self.model_classdef.info.has_readable_member(field.name))
             ):
                 relation_info = self.lookup_class_typeinfo_or_incomplete_defn_error(type(field))
                 parent_info = self.lookup_class_typeinfo_or_incomplete_defn_error(related_model_cls)
