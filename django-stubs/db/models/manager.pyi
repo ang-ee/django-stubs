@@ -43,6 +43,7 @@ class BaseManager(Generic[_T]):
     def __get__(self, instance: Options[Any] | None, cls: type[Any] | None = None) -> Self: ...
 
 class Manager(BaseManager[_T]):
+    _queryset_class: type[QuerySet[_T]]
     # NOTE: The following methods are in common with QuerySet, but note that the use of QuerySet as a return type
     # rather than a self-type (_QS), since Manager's QuerySet-like methods return QuerySets and not Managers.
     def iterator(self, chunk_size: int | None = ...) -> Iterator[_T]: ...
