@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
+from mypy.maptype import map_instance_to_supertype
+from mypy.mro import calculate_mro
 from mypy.nodes import (
     GDEF,
     CallExpr,
@@ -9,11 +11,13 @@ from mypy.nodes import (
     FuncBase,
     FuncDef,
     MemberExpr,
+    MypyFile,
     Node,
     OverloadedFuncDef,
     PlaceholderNode,
     RefExpr,
     StrExpr,
+    SuperExpr,
     SymbolTableNode,
     TypeInfo,
 )
@@ -26,9 +30,12 @@ from mypy.types import Type as MypyType
 from mypy_django_plugin.lib import fullnames, helpers
 
 if TYPE_CHECKING:
+    from django.db import models
     from mypy.checker import TypeChecker
     from mypy.plugin import AttributeContext, ClassDefContext, DynamicClassDefContext
     from mypy.semanal import SemanticAnalyzer
+
+    from mypy_django_plugin.django.context import DjangoContext
 
 MANAGER_METHODS_RETURNING_QUERYSET: Final = frozenset(
     (
@@ -57,13 +64,18 @@ MANAGER_METHODS_RETURNING_QUERYSET: Final = frozenset(
 
 
 def get_method_type_from_dynamic_manager(
-    api: TypeChecker, method_name: str, manager_instance: Instance
+    api: TypeChecker,
+    method_name: str,
+    manager_instance: Instance,
+    manager_type_info: TypeInfo | None = None,
+    django_context: DjangoContext | None = None,
 ) -> ProperType | None:
     """
     Attempt to resolve a method on a manager that was built from '.from_queryset'
     """
 
-    manager_type_info = manager_instance.type.get_containing_type_info(method_name)
+    if manager_type_info is None:
+        manager_type_info = manager_instance.type.get_containing_type_info(method_name)
 
     if (
         manager_type_info is None
@@ -83,6 +95,25 @@ def get_method_type_from_dynamic_manager(
 
     # Resolve the method as if it was accessed on the queryset, parametrized with the manager's model.
     queryset_instance = Instance(queryset_info, (manager_model.item,) * len(queryset_info.type_vars))
+    if method_name == "get_queryset":
+        # The factory changes _queryset_class, not the inherited method's
+        # arguments. Only Django's native getter guarantees that it constructs
+        # _queryset_class; an authored override retains its declared contract.
+        runtime_manager = django_context.get_manager_class(manager_type_info) if django_context is not None else None
+        for base in manager_type_info.mro[1:]:
+            symbol = base.names.get(method_name)
+            if (
+                symbol is None
+                or isinstance(get_proper_type(symbol.type), AnyType)
+                or _is_runtime_absent_method(base, symbol, method_name, runtime_manager)
+            ):
+                continue
+            inherited = map_instance_to_supertype(manager_instance, base)
+            signature = get_proper_type(find_member(method_name, inherited, inherited))
+            if base.fullname == fullnames.BASE_MANAGER_CLASS_FULLNAME and isinstance(signature, CallableType):
+                return signature.copy_modified(ret_type=queryset_instance)
+            return signature
+        return None
     method_type = find_member(method_name, queryset_instance, queryset_instance)
 
     # For methods on the manager that return a queryset we need to override the
@@ -104,13 +135,21 @@ def _get_funcdef_type(definition: Node | None) -> ProperType | None:
     return None
 
 
-def resolve_manager_method_from_instance(instance: Instance, method_name: str, ctx: AttributeContext) -> MypyType:
+def resolve_manager_method_from_instance(
+    instance: Instance,
+    method_name: str,
+    ctx: AttributeContext,
+    manager_type_info: TypeInfo | None = None,
+    django_context: DjangoContext | None = None,
+) -> MypyType:
     api = helpers.get_typechecker_api(ctx)
-    method_type = get_method_type_from_dynamic_manager(api, method_name, instance)
+    method_type = get_method_type_from_dynamic_manager(api, method_name, instance, manager_type_info, django_context)
     return method_type if method_type is not None else ctx.default_attr_type
 
 
-def resolve_manager_method(ctx: AttributeContext) -> MypyType:
+def resolve_manager_method(
+    ctx: AttributeContext, *, method_name: str, manager_type_info: TypeInfo, django_context: DjangoContext
+) -> MypyType:
     """
     A 'get_attribute_hook' that is intended to be invoked whenever the TypeChecker encounters
     an attribute on a class that has 'django.db.models.BaseManager' as a base.
@@ -122,21 +161,27 @@ def resolve_manager_method(ctx: AttributeContext) -> MypyType:
     if default_attr_type.type_of_any != TypeOfAny.implementation_artifact:
         return ctx.default_attr_type
 
-    # (Current state is:) We wouldn't end up here when looking up a method from a custom _manager_.
-    # That's why we only attempt to lookup the method for either a dynamically added or reverse manager.
-    if isinstance(ctx.context, MemberExpr):
-        method_name = ctx.context.name
-    elif isinstance(ctx.context, CallExpr) and isinstance(ctx.context.callee, MemberExpr):
-        method_name = ctx.context.callee.name
-    else:
-        ctx.api.fail("Unable to resolve return type of queryset/manager method", ctx.context)
-        return AnyType(TypeOfAny.from_error)
-
+    # A super access selects a base symbol even though ctx.type is the child
+    # instance. Other accesses (including unions) resolve each receiver's own
+    # generated manager rather than sharing the hook's first selected owner.
+    selected_manager = manager_type_info if isinstance(ctx.context, SuperExpr) else None
     if isinstance(ctx.type, Instance):
-        return resolve_manager_method_from_instance(instance=ctx.type, method_name=method_name, ctx=ctx)
+        return resolve_manager_method_from_instance(
+            instance=ctx.type,
+            method_name=method_name,
+            ctx=ctx,
+            manager_type_info=selected_manager,
+            django_context=django_context,
+        )
     if isinstance(ctx.type, UnionType) and all(isinstance(get_proper_type(item), Instance) for item in ctx.type.items):
         resolved = tuple(
-            resolve_manager_method_from_instance(instance=instance, method_name=method_name, ctx=ctx)
+            resolve_manager_method_from_instance(
+                instance=instance,
+                method_name=method_name,
+                ctx=ctx,
+                manager_type_info=selected_manager,
+                django_context=django_context,
+            )
             for item in ctx.type.items
             if isinstance((instance := get_proper_type(item)), Instance)
         )
@@ -145,7 +190,9 @@ def resolve_manager_method(ctx: AttributeContext) -> MypyType:
     return AnyType(TypeOfAny.from_error)
 
 
-def create_new_manager_class_from_from_queryset_method(ctx: DynamicClassDefContext) -> None:
+def create_new_manager_class_from_from_queryset_method(
+    ctx: DynamicClassDefContext, *, django_context: DjangoContext
+) -> None:
     """
     Insert a new manager class node for a: '<Name> = <Manager>.from_queryset(<QuerySet>)'.
     When the assignment expression lives at module level.
@@ -164,7 +211,9 @@ def create_new_manager_class_from_from_queryset_method(ctx: DynamicClassDefConte
         # This is just a deferral run where our work is already finished
         return
 
-    new_manager_info = create_manager_info_from_from_queryset_call(semanal_api, ctx.call, ctx.name)
+    new_manager_info = create_manager_info_from_from_queryset_call(
+        semanal_api, ctx.call, ctx.name, django_context=django_context
+    )
     if new_manager_info is None:
         if not ctx.api.final_iteration:
             # Only add PlaceholderNode if it doesn't already exist to prevent
@@ -187,7 +236,7 @@ def register_dynamically_created_manager(fullname: str, manager_name: str, manag
 
 
 def create_manager_info_from_from_queryset_call(
-    api: SemanticAnalyzer, call_expr: CallExpr, name: str | None = None
+    api: SemanticAnalyzer, call_expr: CallExpr, name: str | None = None, *, django_context: DjangoContext | None = None
 ) -> TypeInfo | None:
     """
     Extract manager and queryset TypeInfo from a from_queryset call.
@@ -221,60 +270,116 @@ def create_manager_info_from_from_queryset_call(
     else:
         manager_name = f"{base_manager_info.name}From{queryset_info.name}"
 
-    # Always look in global scope, as that's where we'll declare dynamic manager classes
-    manager_sym = api.globals.get(manager_name)
-    if (
-        manager_sym is not None
-        and isinstance(manager_sym.node, TypeInfo)
-        and manager_sym.node.has_base(base_manager_info.fullname)
-        and manager_sym.node.metadata.get("django", {}).get("from_queryset_manager") == queryset_info.fullname
-    ):
-        # Reuse an identical, already generated, manager
-        new_manager_info = manager_sym.node
-    else:
-        # Create a new `TypeInfo` instance for the manager type
-        try:
-            new_manager_info = create_manager_class(
-                api=api,
-                base_manager_info=base_manager_info,
-                name=manager_name,
-                line=call_expr.line,
-                with_unique_name=name is not None and name != manager_name,
-            )
-        except helpers.IncompleteDefnException:
-            return None
+    try:
+        return create_manager_info_from_queryset(
+            api.modules[api.cur_mod_id],
+            base_manager_info,
+            queryset_info,
+            manager_name=manager_name,
+            name=name,
+            line=call_expr.line,
+            runtime_manager=django_context.get_manager_class(base_manager_info) if django_context is not None else None,
+        )
+    except helpers.IncompleteDefnException:
+        return None
 
-        populate_manager_from_queryset(new_manager_info, queryset_info)
+
+def create_manager_info_from_queryset(
+    module: MypyFile,
+    base_manager_info: TypeInfo,
+    queryset_info: TypeInfo,
+    *,
+    manager_name: str | None = None,
+    name: str | None = None,
+    line: int = -1,
+    runtime_manager: type[models.Manager[Any]] | None = None,
+) -> TypeInfo:
+    """Build a native ``from_queryset`` manager from already resolved types.
+
+    The explicit module owns the generated symbol in semantic analysis or a
+    checker hook. Identical factories reuse that symbol, including when names
+    collide with authored symbols or other queryset classes. Incomplete manager
+    type variables raise ``IncompleteDefnException`` for the caller to handle.
+    ``name`` additionally binds a module-level assignment's authored alias.
+    ``runtime_manager`` can witness typing-only declarations absent at runtime;
+    without a witness, declared overrides are conservatively preserved.
+    """
+    if manager_name is None:
+        manager_name = f"{base_manager_info.name}From{queryset_info.name}"
+    for symbol in module.names.values():
+        candidate = symbol.node
+        if not isinstance(candidate, TypeInfo) or candidate.module_name != module.fullname:
+            continue
+        metadata = candidate.metadata.get("django", {})
+        if (
+            candidate.bases
+            and candidate.bases[0].type.fullname == base_manager_info.fullname
+            and metadata.get("from_queryset_manager") == queryset_info.fullname
+            and metadata.get("from_queryset_manager_name", candidate.name) == manager_name
+        ):
+            new_manager_info = candidate
+            break
+    else:
+        new_manager_info = create_manager_class(
+            module=module,
+            base_manager_info=base_manager_info,
+            name=manager_name,
+            line=line,
+            with_unique_name=name is None or name != manager_name,
+        )
+        # Keep the native factory name when the module needed a unique symbol.
+        helpers.get_django_metadata(new_manager_info)["from_queryset_manager_name"] = manager_name
         register_dynamically_created_manager(
             fullname=new_manager_info.fullname,
             manager_name=manager_name,
             manager_base=base_manager_info,
         )
 
-    # Add the new manager to the current module
-    # TODO: use proper SemanticAnalyzer API for that.
-    module = api.modules[api.cur_mod_id]
+    populate_manager_from_queryset(new_manager_info, queryset_info, runtime_manager=runtime_manager)
     if name is not None and name != new_manager_info.name:
-        # Unless names are equal, there's 2 symbol names that needs the manager info
         module.names[name] = SymbolTableNode(GDEF, new_manager_info, plugin_generated=True)
-
     module.names[new_manager_info.name] = SymbolTableNode(GDEF, new_manager_info, plugin_generated=True)
     return new_manager_info
 
 
 def create_manager_class(
-    api: SemanticAnalyzer, base_manager_info: TypeInfo, name: str, line: int, with_unique_name: bool
+    module: MypyFile, base_manager_info: TypeInfo, name: str, line: int, with_unique_name: bool
 ) -> TypeInfo:
     # If any of the type vars are undefined we need to defer. This is handled by the caller
     if any(has_placeholder(type_var) for type_var in base_manager_info.defn.type_vars):
         raise helpers.IncompleteDefnException
 
     return helpers.build_reparametrized_subclass(
-        api.modules[api.cur_mod_id], base_manager_info, name, unique_name=with_unique_name, line=line
+        module, base_manager_info, name, unique_name=with_unique_name, line=line
     )
 
 
-def populate_manager_from_queryset(manager_info: TypeInfo, queryset_info: TypeInfo) -> None:
+def _is_runtime_absent_method(
+    owner: TypeInfo, symbol: SymbolTableNode, name: str, runtime_manager: type[models.Manager[Any]] | None
+) -> bool:
+    definition = symbol.node.func if isinstance(symbol.node, Decorator) else symbol.node
+    if runtime_manager is None or not isinstance(definition, FuncDef) or not definition.is_mypy_only:
+        return False
+    for runtime_owner in runtime_manager.__mro__:
+        if helpers.get_class_fullname(runtime_owner) == owner.fullname:
+            # A custom metaclass can supply methods outside the class dictionary.
+            return type(runtime_owner) is type and name not in vars(runtime_owner)
+    return False
+
+
+def _get_manager_method_owner(
+    manager_info: TypeInfo, name: str, runtime_manager: type[models.Manager[Any]] | None
+) -> TypeInfo | None:
+    for owner in manager_info.mro:
+        symbol = owner.names.get(name)
+        if symbol is not None and not _is_runtime_absent_method(owner, symbol, name, runtime_manager):
+            return owner
+    return None
+
+
+def populate_manager_from_queryset(
+    manager_info: TypeInfo, queryset_info: TypeInfo, *, runtime_manager: type[models.Manager[Any]] | None = None
+) -> None:
     """
     Add methods from the QuerySet class to the manager.
     """
@@ -294,7 +399,14 @@ def populate_manager_from_queryset(manager_info: TypeInfo, queryset_info: TypeIn
                 continue
             # private, magic methods are not copied
             # https://github.com/django/django/blob/5.0.4/django/db/models/manager.py#L101
-            if name.startswith("_"):
+            owner = _get_manager_method_owner(manager_info, name, runtime_manager)
+            # Manager's queryset copies yield to the queryset's declarations;
+            # BaseManager's own methods keep Django's precedence.
+            if name.startswith("_") or (
+                owner is not None
+                and owner.fullname != fullnames.MANAGER_CLASS_FULLNAME
+                and "from_queryset_manager" not in owner.metadata.get("django", {})
+            ):
                 continue
             # Insert the queryset method name as a class member. Note that the type of
             # the method is set as Any. Figuring out the type is the job of the
@@ -314,7 +426,15 @@ def populate_manager_from_queryset(manager_info: TypeInfo, queryset_info: TypeIn
     # by adding the methods as attributes with type Any to the manager
     # class. The actual type of these methods are resolved in
     # resolve_manager_method.
-    for method_name in MANAGER_METHODS_RETURNING_QUERYSET:
+    for method_name in (*MANAGER_METHODS_RETURNING_QUERYSET, "get_queryset"):
+        owner = _get_manager_method_owner(manager_info, method_name, runtime_manager)
+        if (
+            owner is not None
+            and owner.fullname not in {fullnames.BASE_MANAGER_CLASS_FULLNAME, fullnames.MANAGER_CLASS_FULLNAME}
+            and "from_queryset_manager" not in owner.metadata.get("django", {})
+        ):
+            # Django keeps authored manager methods ahead of queryset copies.
+            continue
         helpers.add_new_sym_for_info(
             manager_info,
             name=method_name,
@@ -328,6 +448,7 @@ def _get_or_create_manager_class_for_queryset(
     *,
     base_manager_info: TypeInfo,
     runtime_manager_base: TypeInfo,
+    additional_manager_bases: list[TypeInfo],
 ) -> TypeInfo:
     """Get or create the generated manager for `<QuerySet>.as_manager()`.
 
@@ -342,19 +463,27 @@ def _get_or_create_manager_class_for_queryset(
     if (
         existing_sym is not None
         and isinstance(existing_sym.node, TypeInfo)
-        and existing_sym.node.has_base(fullnames.MANAGER_CLASS_FULLNAME)
+        and existing_sym.node.has_base(base_manager_info.fullname)
+        and all(existing_sym.node.has_base(base.fullname) for base in additional_manager_bases)
         and existing_sym.node.metadata.get("django", {}).get("from_queryset_manager") == queryset_info.fullname
     ):
         # Reuse an identical, already generated, manager
         new_manager_info = existing_sym.node
     else:
         new_manager_info = create_manager_class(
-            api=semanal_api,
+            module=current_module,
             base_manager_info=base_manager_info,
             name=name,
             line=queryset_info.line,
             with_unique_name=True,
         )
+        # Each queryset parent contributes an as_manager return contract. Retain
+        # all of those generated manager bases, sharing the model type variable.
+        for base in additional_manager_bases:
+            new_manager_info.bases.append(Instance(base, new_manager_info.bases[0].args))
+        if additional_manager_bases:
+            new_manager_info.mro = []
+            calculate_mro(new_manager_info)
         populate_manager_from_queryset(new_manager_info, queryset_info)
         register_dynamically_created_manager(
             fullname=new_manager_info.fullname,
@@ -439,12 +568,40 @@ def add_as_manager_to_queryset_class(ctx: ClassDefContext) -> None:
         if not base_as_manager.plugin_generated and base_manager_info.has_base(fullnames.MANAGER_CLASS_FULLNAME):
             runtime_manager_base = base_manager_info
 
+    # Multiple queryset parents each contribute an as_manager return contract.
+    # Wait for their generated methods before choosing the static manager bases.
+    manager_bases = [base_manager_info]
+    for base in queryset_info.bases:
+        if base.type.fullname == fullnames.QUERYSET_CLASS_FULLNAME or not base.type.has_base(
+            fullnames.QUERYSET_CLASS_FULLNAME
+        ):
+            continue
+        if "as_manager" not in base.type.names:
+            return _defer()
+        parent_method = base.type.get("as_manager")
+        if parent_method is None:
+            return _defer()
+        parent_method_type = _get_funcdef_type(parent_method.node)
+        if not isinstance(parent_method_type, CallableType):
+            return _defer()
+        parent_return = semanal_api.anal_type(parent_method_type.ret_type)
+        if parent_return is None:
+            return _defer()
+        parent_return = get_proper_type(parent_return)
+        if isinstance(parent_return, Instance):
+            parent_manager = parent_return.type
+            if any(manager.has_base(parent_manager.fullname) for manager in manager_bases):
+                continue
+            manager_bases = [manager for manager in manager_bases if not parent_manager.has_base(manager.fullname)]
+            manager_bases.append(parent_manager)
+
     try:
         new_manager_info = _get_or_create_manager_class_for_queryset(
             semanal_api,
             queryset_info,
-            base_manager_info=base_manager_info,
+            base_manager_info=manager_bases[0],
             runtime_manager_base=runtime_manager_base,
+            additional_manager_bases=manager_bases[1:],
         )
     except helpers.IncompleteDefnException:
         return _defer()

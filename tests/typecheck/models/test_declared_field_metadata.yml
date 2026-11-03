@@ -1,0 +1,54 @@
+-   case: abstract_static_parent_fields_use_the_declaring_native_field_metadata
+    main: |
+        from datetime import datetime
+        from typing import TypeVar
+        from django.db import models
+        from myapp.models import Concrete, Generator
+
+        T = TypeVar("T", bound=Generator)
+        def edit(row: Generator, rows: models.QuerySet[Generator]) -> None:
+            row.save(update_fields=["updated_at"])
+            rows.bulk_update([row], fields=["updated_at"])
+            rows.update(updated_at=datetime.now())
+            auto: bool = Generator._meta.get_field("updated_at").auto_now
+            row.save(update_fields=["id"])  # E: "save()" does not support primary key fields. Got "id"  [misc]
+            row.save(update_fields=["ordinary"])  # E: Generator has no field named 'ordinary'  [misc]
+            row.save(update_fields=["missing"])  # E: Generator has no field named 'missing'  [misc]
+            row.save(update_fields=["label"])  # E: Generator has no field named 'label'  [misc]
+            rows.bulk_update([row], fields=["id"])  # E: "bulk_update()" does not support primary key fields. Got "id"  [misc]
+            Generator._meta.get_field("missing")  # E: Generator has no field named 'missing'  [misc]
+            Generator._meta.get_field("ordinary")  # E: Generator has no field named 'ordinary'  [misc]
+            Generator._meta.get_field("updated_at").missing  # ER: "DateTimeField.*has no attribute "missing".*
+        def reflect(kind: type[T]) -> None:
+            auto: bool = kind._meta.get_field("updated_at").auto_now
+        Concrete().save(update_fields=["missing"])  # E: Concrete has no field named 'missing'  [misc]
+    installed_apps:
+        - myapp
+    files:
+        -   path: myapp/__init__.py
+        -   path: myapp/models.py
+            content: |
+                from typing import TYPE_CHECKING
+                from django.db import models
+
+                class Parent(models.Model):
+                    id = models.UUIDField(primary_key=True)
+                    updated_at = models.DateTimeField(auto_now=True)
+                    ordinary: int = 1
+                    @property
+                    def label(self) -> str:
+                        return "parent"
+
+                # A generator declares its required static parent while the
+                # runtime registry holds the unmaterialized abstract class.
+                if TYPE_CHECKING:
+                    ParentContract = Parent
+                else:
+                    ParentContract = models.Model
+
+                class Generator(ParentContract):
+                    class Meta:
+                        abstract = True
+
+                class Concrete(Generator):
+                    updated_at = models.DateTimeField(auto_now=True)

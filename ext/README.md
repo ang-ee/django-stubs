@@ -1,4 +1,9 @@
-# Extensions and monkey-patching for django-stubs
+# angee-django-stubs-ext
+
+Runtime extensions for Angee's Django typing fork. This distribution retains
+the `django_stubs_ext` import name and is installed by `angee-django-stubs`.
+Use a clean environment without upstream `django-stubs-ext`, which provides
+the same Python files. The upstream documentation and attribution follow.
 
 [![test](https://github.com/typeddjango/django-stubs/actions/workflows/test.yml/badge.svg?branch=master&event=push)](https://github.com/typeddjango/django-stubs/actions/workflows/test.yml)
 [![Checked with mypy](http://www.mypy-lang.org/static/mypy_badge.svg)](http://mypy-lang.org/)
@@ -9,7 +14,7 @@ This package contains extensions and monkey-patching functions for the [django-s
 ## Installation
 
 ```bash
-pip install django-stubs-ext
+pip install angee-django-stubs-ext
 ```
 
 ## Usage

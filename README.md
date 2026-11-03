@@ -1,3 +1,25 @@
+# angee-django-stubs
+
+Angee's published Django typing fork, based on
+[`998f5803`](https://github.com/ang-ee/django-stubs/commit/998f5803437fcdaa9334628548d3adb053ad55ac),
+provides the native hooks used by django-compose. Install the `compatible-mypy`
+extra to obtain the matching `angee-mypy` and `angee-django-stubs-ext` releases.
+The native `mypy_django_plugin` and `django_stubs_ext` imports are unchanged.
+Use a clean environment without the upstream `mypy`, `django-stubs`, or
+`django-stubs-ext` distributions, which provide the same files.
+Version `6.1.2.post4` follows upstream master's descriptor-based field reads
+(setters accept `Combinable`, generic models referenced by the plugin take `Any`
+type arguments, foreign-key `_id` attributes with a default are not optional) and
+lets a queryset's own method declarations keep their signatures on managers built
+with `as_manager()` or `from_queryset()`; `BaseManager`'s methods keep Django's
+precedence and authored manager overrides still win.
+
+Version `6.1.2.post3` shares related-model type resolution across authored fields,
+constructor checks and runtime model integrations, including proxy relations.
+It retains independent queryset types in heterogeneous `Prefetch` calls and
+declared foreign-key contracts on abstract models. The upstream documentation
+and attribution follow.
+
 <img src="https://raw.githubusercontent.com/typeddjango/django-stubs/master/logo.svg" alt="django-stubs">
 
 [![test](https://github.com/typeddjango/django-stubs/actions/workflows/test.yml/badge.svg?branch=master&event=push)](https://github.com/typeddjango/django-stubs/actions/workflows/test.yml)
@@ -16,7 +38,7 @@ This package contains [type stubs](https://www.python.org/dev/peps/pep-0561/) an
 ## Installation
 
 ```bash
-pip install 'django-stubs[compatible-mypy]'
+pip install 'angee-django-stubs[compatible-mypy]'
 ```
 
 To make mypy aware of the plugin, you need to add
@@ -173,7 +195,7 @@ This happens because these Django classes do not support [`__class_getitem__`](h
    Install it:
 
    ```bash
-   pip install django-stubs-ext  # as a production dependency
+   pip install angee-django-stubs-ext  # as a production dependency
    ```
 
    And then place in your top-level settings:

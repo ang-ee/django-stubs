@@ -5,7 +5,10 @@ from typing import TYPE_CHECKING, Any, assert_type
 from django.db.models import Lookup
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from django.db.backends.base.base import BaseDatabaseWrapper
+    from django.db.backends.utils import _SQLType
     from django.db.models.fields.json import CaseInsensitiveMixin
     from django.db.models.sql.compiler import SQLCompiler
 
@@ -32,4 +35,5 @@ def test_subclass_without_type_arg(lookup: MyLookup, typed: MyTypedLookup) -> No
 def test_case_insensitive_mixin(
     mixin: CaseInsensitiveMixin, compiler: SQLCompiler, connection: BaseDatabaseWrapper
 ) -> None:
-    assert_type(mixin.process_lhs(compiler, connection), tuple[str, tuple[str | int, ...]])
+    if TYPE_CHECKING:
+        assert_type(mixin.process_lhs(compiler, connection), tuple[str, Sequence[_SQLType]])

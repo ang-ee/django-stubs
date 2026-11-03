@@ -16,9 +16,11 @@ from django.db.models.fields.related import ForeignKey, RelatedField
 from django.db.models.fields.reverse_related import ForeignObjectRel
 from django.db.models.lookups import Exact, In
 from django.db.models.sql.query import Query
+from mypy.nodes import Var
 from mypy.typeanal import make_optional_type
 from mypy.types import AnyType, Instance, ProperType, TypeOfAny, UnionType, get_proper_type
 from mypy.types import Type as MypyType
+from mypy.types_utils import remove_optional
 
 from mypy_django_plugin.exceptions import UnregisteredModelError
 from mypy_django_plugin.lib import fullnames, helpers
@@ -31,8 +33,9 @@ if TYPE_CHECKING:
     from django.db.models.expressions import Expression
     from django.db.models.options import _AnyField
     from mypy.checker import TypeChecker
-    from mypy.nodes import Context
+    from mypy.nodes import Context, TypeInfo
     from mypy.plugin import MethodContext
+    from mypy.semanal import SemanticAnalyzer
 
 
 @contextmanager
@@ -93,6 +96,53 @@ class DjangoContext:
                     modules[model_cls.__module__][model_cls.__name__] = model_cls
         return modules
 
+    def get_model_manager(
+        self,
+        api: TypeChecker | SemanticAnalyzer,
+        model_cls: type[Model],
+        name: Literal["_default_manager", "_base_manager"],
+    ) -> models.Manager[Model] | None:
+        """Resolve a model's manager through Django's native Options selector."""
+        return model_cls._meta.default_manager if name == "_default_manager" else model_cls._meta.base_manager
+
+    def get_manager_class(self, manager_info: TypeInfo) -> type[models.Manager[Any]] | None:
+        """Find a known manager ancestor using Django's registered manager instances.
+
+        Generated classes have different static and runtime module identities;
+        an authored ancestor still witnesses its own runtime method definitions.
+        Unknown authored ancestors remain unresolved.
+        """
+        for info in manager_info.mro:
+            for model in self.apps_registry.get_models(include_auto_created=True, include_swapped=True):
+                for manager in model._meta.managers:
+                    for manager_class in type(manager).__mro__:
+                        if helpers.get_class_fullname(manager_class) == info.fullname:
+                            return manager_class
+        return None
+
+    def get_model_fullname(self, model_cls: type[Model]) -> str:
+        """Return the declaration identity used to accept model values.
+
+        Read results and app registry lookups retain the registered model's own identity.
+        """
+        return helpers.get_class_fullname(model_cls)
+
+    def lookup_model_typeinfo(self, api: TypeChecker | SemanticAnalyzer, model_cls: type[Model]) -> TypeInfo | None:
+        return helpers.lookup_fully_qualified_typeinfo(api, self.get_model_fullname(model_cls))
+
+    def get_related_model_typeinfos(
+        self, api: TypeChecker | SemanticAnalyzer, model_cls: type[Model]
+    ) -> tuple[TypeInfo | None, TypeInfo | None]:
+        """Resolve a forward relation's accepted values and registered read result.
+
+        Proxy relations accept their underlying model. Setter lookup retains the
+        context's declaration mapping; getters retain the registered model itself.
+        """
+        setter_model = model_cls._meta.proxy_for_model or model_cls
+        return self.lookup_model_typeinfo(api, setter_model), helpers.lookup_fully_qualified_typeinfo(
+            api, helpers.get_class_fullname(model_cls)
+        )
+
     def get_model_class_by_fullname(self, fullname: str) -> type[Model] | None:
         """Returns None if Model is abstract"""
         module, _, model_cls_name = fullname.rpartition(".")
@@ -123,7 +173,7 @@ class DjangoContext:
     def get_field_lookup_exact_type(self, api: TypeChecker, field: _AnyField, context: Context) -> MypyType:
         if isinstance(field, RelatedField | ForeignObjectRel):
             related_model_cls = self.get_field_related_model_cls(field)
-            rel_model_info = helpers.lookup_class_typeinfo(api, related_model_cls)
+            rel_model_info = self.lookup_model_typeinfo(api, related_model_cls)
             if rel_model_info is None:
                 return AnyType(TypeOfAny.explicit)
 
@@ -160,11 +210,26 @@ class DjangoContext:
                     return field
         raise ValueError("No primary key defined")
 
+    def get_model_field(self, api: TypeChecker, model_cls: type[Model], field_name: str) -> _AnyField:
+        """Resolve native metadata, including an abstract static field's owner."""
+        try:
+            return model_cls._meta.get_field(field_name)
+        except FieldDoesNotExist:
+            if model_cls._meta.abstract:
+                info = self.lookup_model_typeinfo(api, model_cls)
+                if helpers.get_field_type_from_model_type_info(info, field_name) is not None:
+                    symbol = info.get(field_name) if info is not None else None
+                    if symbol is not None and isinstance(symbol.node, Var):
+                        owner = self.get_model_class_by_fullname(symbol.node.info.fullname)
+                        if owner is not None and owner is not model_cls:
+                            return owner._meta.get_field(field_name)
+            raise
+
     def get_expected_types(
         self, api: TypeChecker, model_cls: type[Model], context: Context, *, method: str
     ) -> dict[str, MypyType]:
         contenttypes_in_apps = self.apps_registry.is_installed("django.contrib.contenttypes")
-        model_info = helpers.lookup_class_typeinfo(api, model_cls)
+        model_info = self.lookup_model_typeinfo(api, model_cls)
         is_init = method == "__init__"
 
         expected_types = {}
@@ -173,6 +238,13 @@ class DjangoContext:
             pk_set_type = helpers.get_field_set_type(api, context, model_info, primary_key_field.attname)
             # `Model()` may leave the pk unset until save(), auto pks already accept None via their field type
             expected_types["pk"] = make_optional_type(pk_set_type) if is_init else pk_set_type
+        elif method == "__init__":
+            try:
+                self.get_primary_key_field(model_cls)
+            except ValueError:
+                # A polymorphic type[Abstract] may add any concrete primary key,
+                # just as the native abstract Model.pk and pk lookup contracts do.
+                expected_types["pk"] = AnyType(TypeOfAny.implementation_artifact)
 
         for field in model_cls._meta.get_fields():
             if contenttypes_in_apps:
@@ -218,7 +290,7 @@ class DjangoContext:
         return {
             klass._meta.label_lower: helpers.get_class_fullname(klass)
             for klass in self.all_registered_model_classes
-            if klass is not models.Model
+            if klass is not models.Model and not klass._meta.abstract
         }
 
     def model_class_fullname_for_label(self, label: str) -> str | None:
@@ -281,12 +353,27 @@ class DjangoContext:
         self, model_cls: type[Model], lookup: str
     ) -> tuple[Sequence[str], Sequence[str], Expression | Literal[False]] | None:
         query = Query(model_cls)
-        if (lookup == "pk" or lookup.startswith("pk__")) and query.get_meta().pk is None:  # type: ignore[comparison-overlap]
+        unknown_pk = query.get_meta().pk is None  # type: ignore[comparison-overlap]
+        if (lookup == "pk" or lookup.startswith("pk__")) and unknown_pk:
             # Primary key lookup when no primary key field is found, model is presumably
             # abstract and we can't say anything about 'pk'.
             return None
         try:
-            return query.solve_lookup_type(lookup)
+            solved = query.solve_lookup_type(lookup)
+            if unknown_pk and model_cls._meta.abstract:
+                lookup_parts, field_parts, _ = solved
+                if len(field_parts) == 1:
+                    field = model_cls._meta.get_field(field_parts[0])
+                    lookup_class = field.get_lookup(lookup_parts[-1]) if lookup_parts else Exact
+                    if (
+                        isinstance(field, ForeignKey)
+                        and field.to_fields == [None]
+                        and self.get_field_related_model_cls(field) is model_cls
+                        and lookup_class is not None
+                        and issubclass(lookup_class, (Exact, In))
+                    ):
+                        return None
+            return solved
         # This occurs when the following conditions are met:
         # - model_cls._meta.abstract = True
         # - part of the lookup is a foreign key defined on model_cls where the 'to' argument is a string
@@ -388,6 +475,78 @@ class DjangoContext:
         lookup_type = self._resolve_lookup_type_from_lookup_class(ctx, lookup_cls)
         return annotation_type if lookup_type is None else lookup_type
 
+    def _resolve_declared_field_lookup(
+        self,
+        ctx: MethodContext,
+        model_cls: type[Model],
+        lookup: str,
+        model_instance: Instance,
+    ) -> MypyType | None:
+        """Read an abstract generator's explicit Field descriptor contract."""
+        if not model_cls._meta.abstract:
+            return None
+        field_name, *parts = lookup.split(LOOKUP_SEP)
+        field_type = helpers.get_field_type_from_model_type_info(model_instance.type, field_name)
+        is_id = False
+        if field_type is None and field_name.endswith("_id"):
+            field_type = helpers.get_field_type_from_model_type_info(model_instance.type, field_name[:-3])
+            is_id = field_type is not None and field_type.type.has_base(fullnames.FOREIGN_KEY_FULLNAME)
+            if not is_id:
+                return None
+        if field_type is None:
+            return None
+        mapped = helpers.get_field_type_args(field_type)
+        assert mapped is not None
+        api = helpers.get_typechecker_api(ctx)
+        value_type: MypyType
+        if field_type.type.has_base(fullnames.FOREIGN_KEY_FULLNAME):
+            related = get_proper_type(remove_optional(mapped.get))
+            if isinstance(related, AnyType):
+                value_type = related
+                if parts and parts[-1] not in Field().get_lookups():
+                    return related
+            elif isinstance(related, Instance) and (target := helpers.DjangoModel.from_model_type(related, self)):
+                if parts and Field().get_lookup(parts[0]) is None and not is_id:
+                    return self.resolve_lookup_expected_type(ctx, target.cls, LOOKUP_SEP.join(parts), target.typ)
+                primary_key_type: MypyType
+                try:
+                    primary_key_field = self.get_primary_key_field(target.cls)
+                except ValueError:
+                    primary_key_type = AnyType(TypeOfAny.implementation_artifact)
+                else:
+                    primary_key_type = helpers.get_field_get_type(
+                        api, ctx.context, target.info, primary_key_field.attname
+                    )
+                value_type = (
+                    primary_key_type if is_id else make_optional_type(UnionType.make_union([related, primary_key_type]))
+                )
+                if is_id and helpers.is_optional(mapped.get):
+                    value_type = make_optional_type(value_type)
+            else:
+                return None
+        else:
+            # Without a concrete runtime field there is no transform chain to
+            # inspect. Only a direct lookup can use its declared descriptor.
+            if len(parts) > 1:
+                return None
+            value_type = helpers.convert_any_to_type(
+                helpers.get_private_descriptor_type(
+                    field_type.type,
+                    "_pyi_lookup_exact_type",
+                    is_nullable=helpers.is_optional(mapped.get),
+                ),
+                mapped.get,
+            )
+        if not parts:
+            return value_type
+        lookup_cls = Field().get_lookup(parts[-1])
+        if lookup_cls is None:
+            return None
+        if issubclass(lookup_cls, In):
+            return ctx.api.named_generic_type("typing.Iterable", [value_type])
+        expected = self._resolve_lookup_type_from_lookup_class(ctx, lookup_cls)
+        return value_type if expected is None else expected
+
     def resolve_lookup_expected_type(
         self, ctx: MethodContext, model_cls: type[Model], lookup: str, model_instance: Instance
     ) -> MypyType:
@@ -397,6 +556,9 @@ class DjangoContext:
             solved_lookup = self.solve_lookup_type(model_cls, lookup)
         except FieldError as exc:
             # ...so we handle annotation lookups here
+            declared_lookup = self._resolve_declared_field_lookup(ctx, model_cls, lookup, model_instance)
+            if declared_lookup is not None:
+                return declared_lookup
             annotation_lookup = self._resolve_annotated_field_lookup(ctx, lookup, model_instance)
             if annotation_lookup is not None:
                 return annotation_lookup
@@ -454,4 +616,4 @@ class DjangoContext:
 
     @cached_property
     def is_contrib_auth_installed(self) -> bool:
-        return "django.contrib.auth" in self.settings.INSTALLED_APPS
+        return self.apps_registry.is_installed("django.contrib.auth")

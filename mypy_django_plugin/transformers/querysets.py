@@ -28,6 +28,7 @@ from mypy.nodes import (
     TupleExpr,
     Var,
 )
+from mypy.typeanal import make_optional_type
 from mypy.types import (
     AnyType,
     CallableType,
@@ -41,6 +42,7 @@ from mypy.types import (
     get_proper_type,
 )
 from mypy.types import Type as MypyType
+from mypy.types_utils import remove_optional
 
 from mypy_django_plugin.django.context import DjangoContext, LookupsAreUnsupported
 from mypy_django_plugin.lib import fullnames, helpers
@@ -101,6 +103,24 @@ def get_field_type_from_lookup(
     try:
         lookup_field, model_cls = django_context.resolve_lookup_into_field(model_cls, lookup)
     except FieldError as exc:
+        # A generator may declare its abstract relation before materializing it.
+        # Only its FK attname has the same lookup and projection PK contract.
+        if model_cls._meta.abstract and lookup.endswith("_id") and LOOKUP_SEP not in lookup:
+            model_info = django_context.lookup_model_typeinfo(helpers.get_typechecker_api(ctx), model_cls)
+            field_type = helpers.get_field_type_from_model_type_info(model_info, lookup[:-3])
+            if (
+                model_info is not None
+                and field_type is not None
+                and field_type.type.has_base(fullnames.FOREIGN_KEY_FULLNAME)
+            ):
+                result = django_context._resolve_declared_field_lookup(
+                    ctx, model_cls, lookup, helpers.model_instance(model_info)
+                )
+                if result is not None:
+                    mapped = helpers.get_field_type_args(field_type)
+                    if mapped is not None and helpers.is_optional(mapped.get):
+                        return make_optional_type(result)
+                    return result
         if not silent_on_error:
             ctx.api.fail(exc.args[0], ctx.context)
         return None
@@ -114,7 +134,7 @@ def get_field_type_from_lookup(
         lookup_field = django_context.get_primary_key_field(model_cls)
 
     api = helpers.get_typechecker_api(ctx)
-    model_info = helpers.lookup_class_typeinfo(api, model_cls)
+    model_info = django_context.lookup_model_typeinfo(api, model_cls)
     return helpers.get_field_get_type(api, ctx.context, model_info, lookup_field.attname)
 
 
@@ -132,7 +152,7 @@ def get_values_list_row_type(
         return AnyType(TypeOfAny.from_error)
 
     typechecker_api = helpers.get_typechecker_api(ctx)
-    model_info = helpers.lookup_class_typeinfo(typechecker_api, model_cls)
+    model_info = django_context.lookup_model_typeinfo(typechecker_api, model_cls)
     if len(field_lookups) == 0:
         if flat:
             primary_key_field = django_context.get_primary_key_field(model_cls)
@@ -429,7 +449,9 @@ def _resolve_annotate_row_type(
     return original_row_type
 
 
-def extract_proper_type_queryset_annotate(ctx: MethodContext, django_context: DjangoContext) -> MypyType:
+def extract_proper_type_queryset_annotate(
+    ctx: MethodContext, django_context: DjangoContext, *, is_alias: bool = False
+) -> MypyType:
     django_model = helpers.get_model_info_from_qs_ctx(ctx, django_context)
     if django_model is None:
         # When the queryset's model is a TypeVar (e.g. inside a generic queryset method body),
@@ -438,6 +460,10 @@ def extract_proper_type_queryset_annotate(ctx: MethodContext, django_context: Dj
         # with return types declared as `QS[WithAnnotations[_Model, ...]]`.
         upper_bound = _extract_model_type_var_upper_bound(ctx)
         if upper_bound is not None:
+            if is_alias:
+                # SQL aliases do not add attributes to returned model instances.
+                # Keep both the bounded model TypeVar and the existing row shape.
+                return ctx.default_return_type
             default_return_type = get_proper_type(ctx.default_return_type)
             if isinstance(default_return_type, Instance):
                 api = helpers.get_typechecker_api(ctx)
@@ -817,10 +843,29 @@ def check_valid_prefetch_related_lookup(
     is_generic_prefetch: bool = False,
 ) -> bool:
     """Check if a lookup string resolve to something that can be prefetched"""
-    current_model_cls = django_model.cls
+    current_model_cls: type[Model] | str = django_model.cls
     contenttypes_installed = django_context.apps_registry.is_installed("django.contrib.contenttypes")
     for through_attr in lookup.split(LOOKUP_SEP):
         rel_obj_descriptor = getattr(current_model_cls, through_attr, None)
+        if (
+            rel_obj_descriptor is None
+            and not is_generic_prefetch
+            and isinstance(current_model_cls, type)
+            and current_model_cls._meta.abstract
+        ):
+            model_info = django_context.lookup_model_typeinfo(helpers.get_typechecker_api(ctx), current_model_cls)
+            field_type = helpers.get_field_type_from_model_type_info(model_info, through_attr)
+            if field_type is not None and field_type.type.has_base(fullnames.FOREIGN_KEY_FULLNAME):
+                mapped = helpers.get_field_type_args(field_type)
+                assert mapped is not None
+                related = get_proper_type(remove_optional(mapped.get))
+                if isinstance(related, AnyType):
+                    return True
+                if isinstance(related, Instance) and (
+                    target := helpers.DjangoModel.from_model_type(related, django_context)
+                ):
+                    current_model_cls = target.cls
+                    continue
         if rel_obj_descriptor is None:
             # If current_model_cls is "self", we cannot use `__name__` and want "self".
             model_name = getattr(current_model_cls, "__name__", current_model_cls)
@@ -916,7 +961,7 @@ def extract_prefetch_related_annotations(ctx: MethodContext, django_context: Dja
         and ctx.arg_types
         and ctx.arg_types[0]
         # Only process the correct overload, i.e.
-        #     def prefetch_related(self, *lookups: str | Prefetch[_PrefetchedQuerySetT, _ToAttrT]) -> Self: ...
+        #     def prefetch_related(self, *lookups: str | Prefetch[str, QuerySet[Model], str]) -> Self: ...
         and None not in ctx.callee_arg_names
     ):
         return ctx.default_return_type
@@ -952,7 +997,7 @@ def extract_prefetch_related_annotations(ctx: MethodContext, django_context: Dja
         elif lookup:
             try:
                 observed_model_cls = django_context.resolve_lookup_into_field(qs_model.cls, lookup)[1]
-                if model_info := helpers.lookup_class_typeinfo(api, observed_model_cls):
+                if model_info := django_context.lookup_model_typeinfo(api, observed_model_cls):
                     elem_model = helpers.model_instance(model_info)
             except (FieldError, LookupsAreUnsupported):
                 pass
@@ -1118,17 +1163,17 @@ def validate_bulk_update(
         return ctx.default_return_type
 
     for field_name in field_names:
-        validate_non_pk_concrete_field(ctx, django_model.cls, field_name, method)
+        validate_non_pk_concrete_field(ctx, django_model.cls, field_name, method, django_context=django_context)
 
     return ctx.default_return_type
 
 
 def _validate_bulk_create_unique_field(
-    ctx: MethodContext, model_cls: type[Model], field_name: str, method: str
+    ctx: MethodContext, model_cls: type[Model], field_name: str, method: str, django_context: DjangoContext
 ) -> bool:
-    return (field := try_get_field(ctx, model_cls, field_name, resolve_pk=True)) is not None and check_field_concrete(
-        ctx, field, field_name, method
-    )
+    return (
+        field := try_get_field(ctx, model_cls, field_name, django_context=django_context, resolve_pk=True)
+    ) is not None and check_field_concrete(ctx, field, field_name, method)
 
 
 def validate_bulk_create(
@@ -1145,12 +1190,14 @@ def validate_bulk_create(
     update_field_names = _extract_field_names_from_collection(ctx, django_context, arg_index=4)
     if update_field_names is not None:
         for field_name in update_field_names:
-            validate_non_pk_concrete_field(ctx, django_model.cls, field_name, method, attr_name="update_fields")
+            validate_non_pk_concrete_field(
+                ctx, django_model.cls, field_name, method, django_context=django_context, attr_name="update_fields"
+            )
 
     unique_field_names = _extract_field_names_from_collection(ctx, django_context, arg_index=5)
     if unique_field_names is not None:
         for field_name in unique_field_names:
-            _validate_bulk_create_unique_field(ctx, django_model.cls, field_name, method)
+            _validate_bulk_create_unique_field(ctx, django_model.cls, field_name, method, django_context)
 
     return ctx.default_return_type
 
@@ -1289,7 +1336,7 @@ def validate_update(ctx: MethodContext, django_context: DjangoContext) -> MypyTy
         return ctx.default_return_type
 
     for field_name in kwargs:
-        field = try_get_field(ctx, django_model.cls, field_name)
+        field = try_get_field(ctx, django_model.cls, field_name, django_context=django_context)
         if field is not None:
             check_field_concrete(ctx, field, field_name, method="update")
 
@@ -1302,7 +1349,7 @@ def validate_in_bulk(ctx: MethodContext, django_context: DjangoContext) -> MypyT
         or (field_name_expr := helpers.get_call_argument_by_name(ctx, "field_name")) is None
         or (field_name := helpers.resolve_string_attribute_value(field_name_expr, django_context)) is None
         or field_name == "pk"
-        or (field := try_get_field(ctx, django_model.cls, field_name)) is None
+        or (field := try_get_field(ctx, django_model.cls, field_name, django_context=django_context)) is None
     ):
         return ctx.default_return_type
 

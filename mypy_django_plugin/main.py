@@ -6,6 +6,7 @@ import sys
 from functools import cache, cached_property, partial
 from typing import TYPE_CHECKING, Any, Final
 
+from django.apps import AppConfig
 from mypy.build import PRI_MED, PRI_MYPY
 from mypy.modulefinder import mypy_path
 from mypy.nodes import Import, ImportFrom, MypyFile, TypeInfo
@@ -15,6 +16,7 @@ from mypy.plugin import (
     ClassDefContext,
     DynamicClassDefContext,
     FunctionContext,
+    FunctionSigContext,
     MethodContext,
     Plugin,
     ReportConfigContext,
@@ -61,6 +63,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from mypy.options import Options
+    from mypy.types import CallableType
     from mypy.types import Type as MypyType
 
 
@@ -156,6 +159,12 @@ class NewSemanalDjangoPlugin(Plugin):
         ]
 
     @override
+    def get_function_signature_hook(self, fullname: str) -> Callable[[FunctionSigContext], CallableType] | None:
+        if fullname in {"django.db.models.enums.TextChoices", "django.db.models.enums.IntegerChoices"}:
+            return choices.functional_enum_signature
+        return None
+
+    @override
     def get_function_hook(self, fullname: str) -> Callable[[FunctionContext], MypyType] | None:
         info = self._get_typeinfo_or_none(fullname)
         if not info:
@@ -186,7 +195,9 @@ class NewSemanalDjangoPlugin(Plugin):
             "values_list": partial(
                 querysets.extract_proper_type_queryset_values_list, django_context=self.django_context
             ),
-            "alias": partial(querysets.extract_proper_type_queryset_annotate, django_context=self.django_context),
+            "alias": partial(
+                querysets.extract_proper_type_queryset_annotate, django_context=self.django_context, is_alias=True
+            ),
             "annotate": partial(querysets.extract_proper_type_queryset_annotate, django_context=self.django_context),
             "create": partial(init_create.typecheck_model_create, django_context=self.django_context),
             "acreate": partial(init_create.typecheck_model_acreate, django_context=self.django_context),
@@ -333,6 +344,9 @@ class NewSemanalDjangoPlugin(Plugin):
         if not info:
             return None
 
+        if attr_name == "related_model" and info.has_base(fullnames.FIELD_FULLNAME):
+            return fields.related_model_type
+
         # Lookup of the '.is_superuser' attribute
         if info.has_base(fullnames.PERMISSION_MIXIN_CLASS_FULLNAME) and attr_name == "is_superuser":
             return partial(set_auth_user_model_boolean_fields, django_context=self.django_context)
@@ -346,7 +360,12 @@ class NewSemanalDjangoPlugin(Plugin):
         if info.has_base(
             fullnames.BASE_MANAGER_CLASS_FULLNAME
         ) and "from_queryset_manager" in helpers.get_django_metadata(info):
-            return resolve_manager_method
+            return partial(
+                resolve_manager_method,
+                method_name=attr_name,
+                manager_type_info=info,
+                django_context=self.django_context,
+            )
 
         if info.has_base(fullnames.STR_PROMISE_FULLNAME):
             return resolve_str_promise_attribute
@@ -374,7 +393,7 @@ class NewSemanalDjangoPlugin(Plugin):
         if method_name == "from_queryset":
             info = self._get_typeinfo_or_none(class_name)
             if info and info.has_base(fullnames.BASE_MANAGER_CLASS_FULLNAME):
-                return create_new_manager_class_from_from_queryset_method
+                return partial(create_new_manager_class_from_from_queryset_method, django_context=self.django_context)
         return None
 
     @cached_property
@@ -382,15 +401,20 @@ class NewSemanalDjangoPlugin(Plugin):
         # Cache would be cleared if any settings do change.
         extra_data = {
             # The additional deps depend on the installed apps
-            "INSTALLED_APPS": list(self.django_context.settings.INSTALLED_APPS),
+            "INSTALLED_APPS": [
+                {"name": app.name, "label": app.label, "config": helpers.get_class_fullname(type(app))}
+                if isinstance(app, AppConfig)
+                else app
+                for app in self.django_context.settings.INSTALLED_APPS
+            ],
             # The user model determines the `_User` alias expansion
             "AUTH_USER_MODEL": self.django_context.settings.AUTH_USER_MODEL,
             # The implicit `pk` field type depends on `DEFAULT_AUTO_FIELD`
             "DEFAULT_AUTO_FIELD": self.django_context.settings.DEFAULT_AUTO_FIELD,
             "django_version": _package_version("django"),
-            "django_stubs_version": _package_version("django-stubs"),
+            "django_stubs_version": _package_version("angee-django-stubs"),
         }
-        if (django_stubs_ext_version := _package_version("django-stubs-ext")) is not None:
+        if (django_stubs_ext_version := _package_version("angee-django-stubs-ext")) is not None:
             extra_data["django_stubs_ext_version"] = django_stubs_ext_version
         return self.plugin_config.to_json(extra_data)
 

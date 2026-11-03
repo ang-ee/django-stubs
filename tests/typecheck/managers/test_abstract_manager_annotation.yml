@@ -1,0 +1,66 @@
+- case: explicit_abstract_manager_contract_survives_inheritance_until_override
+  main: |
+    from typing_extensions import assert_type
+    from django.db import models
+    from myapp.models import First, Second, Registered, Override, Further, Replaced
+
+    assert_type(First.objects, models.Manager[First])
+    assert_type(Second.objects, models.Manager[Second])
+    assert_type(First.objects.get(), First)
+    assert_type(Registered.objects.get(), Registered)
+    assert_type(Registered.objects.marker(), int)
+    assert_type(Override.objects.get(), Override)
+    assert_type(Override.objects.label(), str)
+    assert_type(Further.objects.get(), Further)
+    assert_type(Further.objects.label(), str)
+    assert_type(Replaced.objects.get(), Replaced)
+    assert_type(Replaced.objects.label(), str)
+    First.objects.marker()  # E: "Manager[First]" has no attribute "marker"  [attr-defined]
+    Replaced.objects.marker()  # E: "ReplacementManager[Replaced]" has no attribute "marker"  [attr-defined]
+  installed_apps:
+    - myapp
+  files:
+    - path: myapp/__init__.py
+    - path: myapp/models.py
+      content: |
+        from typing import ClassVar, TypeVar
+        from typing_extensions import Self
+        from django.db import models
+
+        M = TypeVar("M", bound=models.Model)
+
+        class CustomManager(models.Manager[M]):
+            def marker(self) -> int:
+                return 42
+
+        class ReplacementManager(models.Manager[M]):
+            def label(self) -> str:
+                return "replacement"
+
+        class Parent(models.Model):
+            objects: ClassVar[models.Manager[Self]] = CustomManager()
+            class Meta:
+                abstract = True
+
+        class First(Parent):
+            class Meta:
+                abstract = True
+
+        class Second(Parent):
+            class Meta:
+                abstract = True
+
+        class Registered(First, Second):
+            pass
+
+        class Override(First):
+            objects = ReplacementManager()
+            class Meta:
+                abstract = True
+
+        class Further(Override):
+            class Meta:
+                abstract = True
+
+        class Replaced(Further, Second):
+            pass

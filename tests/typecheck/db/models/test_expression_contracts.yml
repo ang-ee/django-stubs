@@ -1,0 +1,46 @@
+- case: expression_names_include_nested_outer_references
+  main: |
+    from django.db.models import F, OuterRef
+    from typing_extensions import assert_type
+
+    expression = F("title")
+    assert_type(expression.name, str | OuterRef)
+    expression.name = "other_title"
+    expression.name = 1  # E: Incompatible types in assignment (expression has type "int", variable has type "str | OuterRef")  [assignment]
+    nested = OuterRef(OuterRef("title"))
+    assert_type(nested.name, str | OuterRef)
+    if isinstance(nested.name, OuterRef):
+        assert_type(nested.name.name, str | OuterRef)
+
+- case: expression_sql_accepts_native_parameter_sequences
+  main: |
+    from collections.abc import Sequence
+    from datetime import date
+    from decimal import Decimal
+    from uuid import UUID
+    from django.db.backends.utils import _SQLType
+    from django.db.models.sql.compiler import _AsSqlType
+
+    def list_params() -> _AsSqlType:
+        return "%s", [Decimal("1.25"), date(2026, 1, 1), UUID(int=0), b"value", None]
+
+    def tuple_params() -> _AsSqlType:
+        return "%s", (True, 1.5, "value")
+
+    def consume(result: _AsSqlType) -> Sequence[_SQLType]:
+        return result[1]
+
+    sql, params = list_params()
+    sql = 1  # E: Incompatible types in assignment (expression has type "int", variable has type "str")  [assignment]
+
+- case: collector_field_updates_contain_batches_of_models
+  main: |
+    from django.db.models import Model
+    from django.db.models.deletion import Collector
+    from typing_extensions import assert_type
+
+    collector = Collector("default")
+    for batches in collector.field_updates.values():
+        for batch in batches:
+            for instance in batch:
+                assert_type(instance, Model)

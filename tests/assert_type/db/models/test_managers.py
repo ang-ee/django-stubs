@@ -40,3 +40,10 @@ class OtherModel(models.Model):
 # `from_queryset` returns `type[Self]`, preserving manager subclasses and their members
 assert_type(CustomManager.from_queryset(OtherQuerySet), type[CustomManager])
 assert_type(CustomManager.from_queryset(OtherQuerySet)().manager_method(), str)
+
+
+# Django's Manager is built by BaseManager.from_queryset(QuerySet); factories
+# keep the model binding on the native queryset-class attribute.
+assert_type(models.Manager[OtherModel]()._queryset_class, type[QuerySet[OtherModel]])
+assert_type(CustomManager.from_queryset(OtherQuerySet)()._queryset_class, type[QuerySet[OtherModel]])
+assert_type(CustomManager.from_queryset(OtherQuerySet)()._queryset_class(model=OtherModel).first(), OtherModel | None)

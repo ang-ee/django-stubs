@@ -6,7 +6,7 @@ from typing import Any, Literal, TypeAlias, overload
 from uuid import UUID
 
 from django.db.backends.base.base import BaseDatabaseWrapper
-from django.db.backends.utils import CursorWrapper
+from django.db.backends.utils import CursorWrapper, _SQLType
 from django.db.models import Field
 from django.db.models.base import Model
 from django.db.models.expressions import BaseExpression, Expression, Ref
@@ -15,9 +15,9 @@ from django.db.models.sql.subqueries import AggregateQuery, DeleteQuery, InsertQ
 from django.utils.functional import cached_property
 from typing_extensions import deprecated, override
 
-_ParamT: TypeAlias = str | int
+_ParamT: TypeAlias = _SQLType
 
-_ParamsT: TypeAlias = tuple[_ParamT, ...]
+_ParamsT: TypeAlias = Sequence[_ParamT]
 _AsSqlType: TypeAlias = tuple[str, _ParamsT]
 
 class PositionRef(Ref):

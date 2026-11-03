@@ -1,0 +1,41 @@
+-   case: abstract_primary_key_constructor_preserves_native_unknown_key_contract
+    main: |
+        from uuid import uuid4
+        from typing import TypeVar
+        from typing_extensions import assert_type
+        from myapp.models import Base, IntegerRow, StringRow, UUIDRow
+
+        T = TypeVar("T", bound=Base)
+        def construct(model: type[T], key: object) -> T:
+            return model(pk=key)
+
+        assert_type(construct(IntegerRow, 1), IntegerRow)
+        assert_type(construct(StringRow, "a"), StringRow)
+        assert_type(construct(UUIDRow, uuid4()), UUIDRow)
+        IntegerRow(pk=1)
+        IntegerRow(pk=1, key=1)
+        StringRow(pk="a")
+        UUIDRow(pk=uuid4())
+        IntegerRow(pk=object())  # ER: Incompatible type for "pk" of "IntegerRow".*
+        StringRow(pk=object())  # ER: Incompatible type for "pk" of "StringRow".*
+        UUIDRow(pk=object())  # ER: Incompatible type for "pk" of "UUIDRow".*
+        def unknown(model: type[Base]) -> None:
+            model(missing=1)  # E: Unexpected attribute "missing" for model "Base"  [misc]
+        Base(pk=1)  # E: Cannot instantiate abstract class "Base" with abstract attributes "DoesNotExist", "MultipleObjectsReturned" and "NotUpdated"  [abstract]
+    installed_apps:
+        - myapp
+    files:
+        -   path: myapp/__init__.py
+        -   path: myapp/models.py
+            content: |
+                from django.db import models
+
+                class Base(models.Model):
+                    class Meta:
+                        abstract = True
+                class IntegerRow(Base):
+                    key = models.IntegerField(primary_key=True)
+                class StringRow(Base):
+                    key = models.CharField(primary_key=True, max_length=30)
+                class UUIDRow(Base):
+                    key = models.UUIDField(primary_key=True)

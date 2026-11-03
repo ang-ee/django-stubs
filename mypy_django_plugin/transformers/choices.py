@@ -4,10 +4,12 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 from django.db.models.constants import LOOKUP_SEP
-from mypy.nodes import MemberExpr, NameExpr, SuperExpr, TypeAlias, TypeInfo, Var
+from mypy.nodes import CallExpr, MemberExpr, NameExpr, SuperExpr, TypeAlias, TypeInfo, Var
+from mypy.subtypes import find_member
 from mypy.typeanal import make_optional_type
 from mypy.types import (
     AnyType,
+    CallableType,
     Instance,
     LiteralType,
     Overloaded,
@@ -24,7 +26,7 @@ from mypy.types import Type as MypyType
 from mypy_django_plugin.lib import fullnames
 
 if TYPE_CHECKING:
-    from mypy.plugin import AttributeContext
+    from mypy.plugin import AttributeContext, FunctionSigContext
 
 
 # TODO: [mypy 1.14+] Remove this backport of `TypeInfo.enum_members`.
@@ -295,3 +297,19 @@ def transform_into_proper_attr_type(ctx: AttributeContext) -> MypyType:
         return _try_replace_value(default_attr_type, base_type, False)
 
     return default_attr_type
+
+
+def functional_enum_signature(ctx: FunctionSigContext) -> CallableType:
+    """Use the native enum metaclass factory overload for functional Choices calls."""
+    if not isinstance(ctx.context, CallExpr) or len(ctx.context.args) < 2:
+        return ctx.default_signature
+    result = get_proper_type(ctx.default_signature.ret_type)
+    if not isinstance(result, Instance) or result.type.metaclass_type is None:
+        return ctx.default_signature
+    metaclass = result.type.metaclass_type
+    call = get_proper_type(find_member("__call__", metaclass, metaclass))
+    signatures = call.items if isinstance(call, Overloaded) else [call] if isinstance(call, CallableType) else []
+    for signature in signatures:
+        if isinstance(get_proper_type(signature.ret_type), TypeType):
+            return signature.copy_modified(ret_type=TypeType(result))
+    return ctx.default_signature

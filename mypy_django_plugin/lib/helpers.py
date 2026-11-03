@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Self, TypedDict, cast
 from mypy import checker
 from mypy.checker import TypeChecker
 from mypy.checkmember import analyze_member_access as _mypy_analyze_member_access
+from mypy.infer import infer_type_arguments
 from mypy.lookup import lookup_fully_qualified
 from mypy.maptype import map_instance_to_supertype
 from mypy.mro import calculate_mro
@@ -39,6 +40,7 @@ from mypy.plugin import (
 )
 from mypy.semanal import SemanticAnalyzer
 from mypy.typeanal import make_optional_type
+from mypy.typeops import get_type_vars
 from mypy.types import (
     AnyType,
     CallableType,
@@ -74,6 +76,7 @@ class DjangoTypeMetadata(TypedDict, total=False):
     is_abstract_model: bool
     is_annotated_model: bool
     from_queryset_manager: str
+    from_queryset_manager_name: str
     reverse_managers: dict[str, str]
     m2m_throughs: dict[str, str]
     m2m_managers: dict[str, str]
@@ -394,10 +397,9 @@ def get_field_type_from_model_type_info(info: TypeInfo | None, field_name: str) 
     field_type = get_proper_type(field_node.type)
     if not isinstance(field_type, Instance):
         return None
-    # Field declares a set and a get type arg. Fallback to `None` when we can't find any args.
-    # Not every model attribute is a field,
-    # a reverse o2o accessor is a two arg descriptor whose args would be misread as set/get types.
-    if len(field_type.args) != 2 or not field_type.type.has_base(fullnames.FIELD_FULLNAME):
+    # Custom fields can have a different number of generic parameters than Field.
+    # Reverse descriptors are not fields, even when they have two type arguments.
+    if not field_type.type.has_base(fullnames.FIELD_FULLNAME):
         return None
     return field_type
 
@@ -548,10 +550,34 @@ def convert_any_to_type(typ: MypyType, referred_to_type: MypyType) -> MypyType:
 
 
 def reparametrize_field_type(field_type: Instance, set_type: MypyType, get_type: MypyType) -> Instance:
-    """Replace `Any` placeholders in the set/get type args of a Field Instance, preserving any additional args."""
-    new_set_type = convert_any_to_type(field_type.args[0], set_type)
-    new_get_type = convert_any_to_type(field_type.args[1], get_type)
-    return field_type.copy_modified(args=[new_set_type, new_get_type, *field_type.args[2:]])
+    """Map descriptor types through a field subclass's declared generics."""
+    generic_field = fill_typevars(field_type.type)
+    assert isinstance(generic_field, Instance)
+    field_info = next(base for base in generic_field.type.mro if base.fullname == fullnames.FIELD_FULLNAME)
+    template = map_instance_to_supertype(generic_field, field_info)
+    inferred = infer_type_arguments(
+        generic_field.type.defn.type_vars, template, Instance(field_info, [set_type, get_type])
+    )
+    descriptor_vars = {variable.id for variable in get_type_vars(template)}
+    return field_type.copy_modified(
+        args=[
+            original if variable.id not in descriptor_vars or value is None else value
+            for variable, original, value in zip(
+                generic_field.type.defn.type_vars, field_type.args, inferred, strict=True
+            )
+        ]
+    )
+
+
+def reparametrize_related_field_type(field_type: Instance, set_type: MypyType, get_type: MypyType) -> Instance:
+    """Fill a relation's Any placeholders while preserving explicit descriptor types."""
+    mapped = get_field_type_args(field_type)
+    assert mapped is not None
+    return reparametrize_field_type(
+        field_type,
+        convert_any_to_type(mapped.set, set_type),
+        convert_any_to_type(mapped.get, get_type),
+    )
 
 
 def _get_fallback_typeddict(api: SemanticAnalyzer | CheckerPluginInterface) -> Instance:
@@ -739,6 +765,12 @@ def get_model_from_expression(
     if lazy_reference is not None:
         model_info = resolve_lazy_reference(lazy_reference, api=api, django_context=django_context, ctx=expr)
         if model_info is not None:
+            # A relationship's accepted model identity comes from the context,
+            # just as ForeignKey's descriptor setter does. This also covers
+            # contexts that map generated models to authored declarations.
+            model_cls = django_context.get_model_class_by_fullname(model_info.fullname)
+            if model_cls is not None:
+                model_info = django_context.lookup_model_typeinfo(api, model_cls) or model_info
             return model_instance(model_info)
     return None
 

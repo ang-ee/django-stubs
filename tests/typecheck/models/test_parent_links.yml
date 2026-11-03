@@ -1,0 +1,27 @@
+- case: automatic_parent_links_use_native_related_descriptors
+  installed_apps: [myapp]
+  main: |
+    from typing_extensions import assert_type
+    from uuid import UUID
+    from myapp.models import Parent, Child, Grandchild, Other
+    child = Child()
+    assert_type(child.parent_ptr, Parent)
+    assert_type(child.parent_ptr_id, UUID)
+    child.parent_ptr = Parent()
+    child.parent_ptr = Other()  # E: Incompatible types in assignment (expression has type "Other", variable has type "Parent | Combinable")  [assignment]
+    assert_type(Grandchild().child_ptr, Child)
+    assert_type(Grandchild().parent_ptr, Parent)
+  files:
+    - path: myapp/__init__.py
+    - path: myapp/models.py
+      content: |
+        from uuid import uuid4
+        from django.db import models
+        class Parent(models.Model):
+            id = models.UUIDField(primary_key=True, default=uuid4)
+        class Child(Parent):
+            pass
+        class Grandchild(Child):
+            pass
+        class Other(models.Model):
+            pass

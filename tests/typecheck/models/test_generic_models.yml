@@ -9,7 +9,7 @@
         reveal_type(article.parent)  # N: Revealed type is "myapp.models.Article[Any]"
         reveal_type(article.author.value())  # N: Revealed type is "Any"
         reveal_type(article.tags.get())  # N: Revealed type is "myapp.models.Tag[Any]"
-        reveal_type(article.get_next_by_published())  # N: Revealed type is "myapp.models.Article[Any]"
+        reveal_type(article.get_next_by_published())  # N: Revealed type is "myapp.models.Article[int]"
         reveal_type(Author[int]().article_set.get())  # N: Revealed type is "myapp.models.Article[Any]"
         reveal_type(Tag[int]().article_set.get())  # N: Revealed type is "myapp.models.Article[Any]"
 
@@ -43,3 +43,31 @@
                     author = models.ForeignKey(Author, on_delete=models.CASCADE)
                     parent = models.ForeignKey("self", on_delete=models.CASCADE)
                     published = models.DateField()
+
+-   case: generic_reverse_relation_uses_custom_default_manager_with_any_model_args
+    main: |
+        from typing import reveal_type
+        from myapp.models import Author
+
+        reveal_type(Author().article_set.published())  # N: Revealed type is "django.db.models.query.QuerySet[myapp.models.Article[Any], myapp.models.Article[Any]]"
+    installed_apps:
+        - myapp
+    files:
+        -   path: myapp/__init__.py
+        -   path: myapp/models.py
+            content: |
+                from typing import Generic, TypeVar
+                from django.db import models
+
+                T = TypeVar("T")
+                M = TypeVar("M", bound=models.Model)
+
+                class Author(models.Model): ...
+
+                class ArticleManager(models.Manager[M]):
+                    def published(self) -> models.QuerySet[M]:
+                        return self.get_queryset()
+
+                class Article(models.Model, Generic[T]):
+                    author = models.ForeignKey(Author, on_delete=models.CASCADE)
+                    objects = ArticleManager["Article[T]"]()

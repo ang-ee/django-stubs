@@ -1,0 +1,29 @@
+- case: abstract_field_removal_keeps_native_none_and_other_field_types
+  main: |
+    from typing_extensions import assert_type
+    from myapp.models import Counter, KeptCounter, RenamedCounter
+    def abstract_counter(row: Counter) -> None:
+        assert_type(row.revision, int)
+    assert_type(KeptCounter().revision, int)
+    assert_type(RenamedCounter().revision, None)
+    assert_type(RenamedCounter().account_revision, int)
+    RenamedCounter().revision = 1  # E: Incompatible types in assignment (expression has type "int", variable has type "None")  [assignment]
+  installed_apps:
+    - myapp
+  files:
+    - path: myapp/__init__.py
+    - path: myapp/models.py
+      content: |
+        from django.db import models
+        class Counter(models.Model):
+            revision = models.PositiveIntegerField(default=1)
+            label: str = ""
+            class Meta:
+                abstract = True
+        class KeptCounter(Counter):
+            pass
+        class RenamedCounter(Counter):
+            revision = None
+            account_revision = models.PositiveIntegerField(default=1)
+        class InvalidPlainAttribute(Counter):
+            label = None  # E: Incompatible types in assignment (expression has type "None", base class "Counter" defined the type as "str")  [assignment]

@@ -1,0 +1,14 @@
+- case: test_auth_user_type_with_app_config_instance
+  main: |
+    from typing_extensions import assert_type
+    from django.contrib.auth import get_user_model
+    from django.contrib.auth.models import User
+
+    assert_type(get_user_model(), type[User])
+    user = get_user_model().objects.get()
+    assert_type(user, User)
+    user.missing()  # E: "User" has no attribute "missing"  [attr-defined]
+  custom_settings: |
+    from django.apps import AppConfig
+
+    INSTALLED_APPS = ("django.contrib.contenttypes", AppConfig.create("django.contrib.auth"))
