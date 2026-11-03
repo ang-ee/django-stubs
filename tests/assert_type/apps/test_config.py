@@ -17,7 +17,7 @@ class BarConfig(AppConfig):
 
     @property
     @override
-    def default_auto_field(self) -> str:  # type: ignore[override]  # pyrefly: ignore[bad-override]
+    def default_auto_field(self) -> str:  # type: ignore[override]  # pyrefly: ignore[bad-override]  # ty: ignore[invalid-property-type-override]
         return "django.db.models.BigAutoField"
 
 
@@ -38,7 +38,7 @@ class FooBarConfig(AppConfig):
 # Pyright correctly picks up our fake '_Getter' descriptor on class level. But we
 # silence the pyright error since mypy doesn't follow along and the fake descriptor
 # is a stubs detail made to round other problems.
-assert_type(FooConfig.default_auto_field, str)  # pyright: ignore[reportAssertTypeFailure]
+assert_type(FooConfig.default_auto_field, str)  # pyright: ignore[reportAssertTypeFailure]  # ty: ignore[type-assertion-failure]
 assert_type(BarConfig("bar", None).default_auto_field, str)
 assert_type(BazConfig("baz", None).default_auto_field, str)
 assert_type(FooBarConfig("baz", None).default_auto_field, str)

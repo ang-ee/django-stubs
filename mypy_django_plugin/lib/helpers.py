@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Self, TypedDict, cast
 from mypy import checker
 from mypy.checker import TypeChecker
 from mypy.checkmember import analyze_member_access as _mypy_analyze_member_access
+from mypy.infer import infer_type_arguments
 from mypy.lookup import lookup_fully_qualified
 from mypy.maptype import map_instance_to_supertype
 from mypy.mro import calculate_mro
@@ -39,6 +40,7 @@ from mypy.plugin import (
 )
 from mypy.semanal import SemanticAnalyzer
 from mypy.typeanal import make_optional_type
+from mypy.typeops import get_type_vars
 from mypy.types import (
     AnyType,
     CallableType,
@@ -386,6 +388,22 @@ def get_private_descriptor_type(type_info: TypeInfo, private_field_name: str, is
     return AnyType(TypeOfAny.explicit)
 
 
+def get_field_type_from_model_type_info(info: TypeInfo | None, field_name: str) -> Instance | None:
+    if info is None:
+        return None
+    field_node = info.get(field_name)
+    if field_node is None:
+        return None
+    field_type = get_proper_type(field_node.type)
+    if not isinstance(field_type, Instance):
+        return None
+    # Custom fields can have a different number of generic parameters than Field.
+    # Reverse descriptors are not fields, even when they have two type arguments.
+    if not field_type.type.has_base(fullnames.FIELD_FULLNAME):
+        return None
+    return field_type
+
+
 class FieldTypeArgs(NamedTuple):
     set: ProperType
     get: ProperType
@@ -529,6 +547,37 @@ def convert_any_to_type(typ: MypyType, referred_to_type: MypyType) -> MypyType:
         return referred_to_type
 
     return typ
+
+
+def reparametrize_field_type(field_type: Instance, set_type: MypyType, get_type: MypyType) -> Instance:
+    """Map descriptor types through a field subclass's declared generics."""
+    generic_field = fill_typevars(field_type.type)
+    assert isinstance(generic_field, Instance)
+    field_info = next(base for base in generic_field.type.mro if base.fullname == fullnames.FIELD_FULLNAME)
+    template = map_instance_to_supertype(generic_field, field_info)
+    inferred = infer_type_arguments(
+        generic_field.type.defn.type_vars, template, Instance(field_info, [set_type, get_type])
+    )
+    descriptor_vars = {variable.id for variable in get_type_vars(template)}
+    return field_type.copy_modified(
+        args=[
+            original if variable.id not in descriptor_vars or value is None else value
+            for variable, original, value in zip(
+                generic_field.type.defn.type_vars, field_type.args, inferred, strict=True
+            )
+        ]
+    )
+
+
+def reparametrize_related_field_type(field_type: Instance, set_type: MypyType, get_type: MypyType) -> Instance:
+    """Fill a relation's Any placeholders while preserving explicit descriptor types."""
+    mapped = get_field_type_args(field_type)
+    assert mapped is not None
+    return reparametrize_field_type(
+        field_type,
+        convert_any_to_type(mapped.set, set_type),
+        convert_any_to_type(mapped.get, get_type),
+    )
 
 
 def _get_fallback_typeddict(api: SemanticAnalyzer | CheckerPluginInterface) -> Instance:
@@ -678,6 +727,13 @@ def is_model_type(info: TypeInfo) -> bool:
     return info.metaclass_type is not None and info.metaclass_type.type.has_base(fullnames.MODEL_METACLASS_FULLNAME)
 
 
+def model_instance(model_info: TypeInfo) -> Instance:
+    """Instance of a model class, with `Any` for the type vars of a generic model."""
+    instance = fill_typevars_with_any(model_info)
+    assert isinstance(instance, Instance)
+    return instance
+
+
 def get_model_from_expression(
     expr: Expression,
     *,
@@ -691,10 +747,10 @@ def get_model_from_expression(
     """
     if isinstance(expr, RefExpr) and isinstance(expr.node, TypeInfo):
         if is_model_type(expr.node):
-            return Instance(expr.node, [])
+            return model_instance(expr.node)
 
     if isinstance(expr, StrExpr) and expr.value == "self":
-        return Instance(self_model, [])
+        return model_instance(self_model)
 
     lazy_reference = None
     if isinstance(expr, StrExpr):
@@ -715,7 +771,7 @@ def get_model_from_expression(
             model_cls = django_context.get_model_class_by_fullname(model_info.fullname)
             if model_cls is not None:
                 model_info = django_context.lookup_model_typeinfo(api, model_cls) or model_info
-            return Instance(model_info, [])
+            return model_instance(model_info)
     return None
 
 
@@ -728,15 +784,20 @@ def merge_extra_attrs(
     *,
     new_attrs: dict[str, MypyType] | None = None,
     new_immutable: set[str] | None = None,
+    drop_prefix: str | None = None,
 ) -> ExtraAttrs:
     """
     Create a new `ExtraAttrs` by merging new attributes/immutable fields into a base.
 
     If base_extra_attrs is None, creates a fresh ExtraAttrs with only the new values.
+    `drop_prefix`, if given, removes existing attrs whose key starts with it before merging in new_attrs.
     """
     if base_extra_attrs:
+        attrs = base_extra_attrs.attrs
+        if drop_prefix is not None:
+            attrs = {k: v for k, v in attrs.items() if not k.startswith(drop_prefix)}
         return ExtraAttrs(
-            attrs={**base_extra_attrs.attrs, **new_attrs} if new_attrs is not None else base_extra_attrs.attrs.copy(),
+            attrs={**attrs, **new_attrs} if new_attrs is not None else attrs.copy(),
             immutable=(
                 base_extra_attrs.immutable | new_immutable
                 if new_immutable is not None
@@ -761,6 +822,7 @@ def analyze_member_access(
     is_operator: bool,
     original_type: MypyType,
     chk: TypeChecker,
+    suppress_errors: bool = False,
 ) -> MypyType:
     # TODO: [mypy 1.16+] Remove this workaround for passing `msg` to `analyze_member_access()`.
     extra: dict[str, Any] = {}
@@ -775,5 +837,45 @@ def analyze_member_access(
         is_operator=is_operator,
         original_type=original_type,
         chk=chk,
+        suppress_errors=suppress_errors,
         **extra,
     )
+
+
+def _resolve_field_descriptor_type(
+    api: TypeChecker, info: TypeInfo | None, field_name: str, context: Context, *, is_lvalue: bool
+) -> ProperType:
+    if info is None:
+        return AnyType(TypeOfAny.from_error)
+    instance = model_instance(info)
+    return get_proper_type(
+        analyze_member_access(
+            name=field_name,
+            typ=instance,
+            context=context,
+            is_lvalue=is_lvalue,
+            is_super=False,
+            is_operator=False,
+            original_type=instance,
+            chk=api,
+            suppress_errors=True,
+        )
+    )
+
+
+def get_field_set_type(api: TypeChecker, context: Context, info: TypeInfo | None, field_name: str) -> ProperType:
+    """Resolve `<model>.<field_name> = ...` rvalue type via Field's `__set__` overloads.
+
+    For `name = CharField()` -> `str | int | Combinable`.
+    For `name = CharField(null=True)` -> `str | int | Combinable | None`.
+    """
+    return _resolve_field_descriptor_type(api, info, field_name, context, is_lvalue=True)
+
+
+def get_field_get_type(api: TypeChecker, context: Context, info: TypeInfo | None, field_name: str) -> ProperType:
+    """Resolve `<model_instance>.<field_name>` read type via Field's `__get__` overloads.
+
+    For `name = CharField()` -> `str`.
+    For `name = CharField(null=True)` -> `str | None`.
+    """
+    return _resolve_field_descriptor_type(api, info, field_name, context, is_lvalue=False)

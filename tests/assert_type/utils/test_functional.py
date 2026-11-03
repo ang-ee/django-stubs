@@ -18,7 +18,7 @@ class Foo:
         raise NotImplementedError
 
     @cached_property  # type: ignore[misc]  # pyright: ignore[reportArgumentType]  # ty: ignore[invalid-argument-type]
-    def attr2(self, arg2: str) -> list[str]:
+    def attr2(self, arg2: str) -> list[str]:  # pyrefly: ignore[bad-function-definition]
         raise NotImplementedError
 
 
@@ -31,7 +31,7 @@ f.attr.func  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAcce
 class Bar(Foo):
     @property
     @override
-    def attr(self) -> list[str]:  # pyright: ignore[reportIncompatibleVariableOverride]
+    def attr(self) -> list[str]:  # pyright: ignore[reportIncompatibleVariableOverride]  # ty: ignore[invalid-property-type-override]
         raise NotImplementedError
 
 

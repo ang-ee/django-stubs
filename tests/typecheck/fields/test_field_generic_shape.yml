@@ -11,8 +11,8 @@
         reveal_type(Record().text)  # N: Revealed type is "str"
         reveal_type(Record._meta.get_field("text").marker)  # N: Revealed type is "type[str]"
         Record(text="valid")
-        Record(text=3)  # E: Incompatible type for "text" of "Record" (got "int", expected "str")  [misc]
-        Record().text = 3  # E: Incompatible types in assignment (expression has type "int", variable has type "str")  [assignment]
+        Record(text=3)  # E: Incompatible type for "text" of "Record" (got "int", expected "str | Combinable")  [misc]
+        Record().text = 3  # E: Incompatible types in assignment (expression has type "int", variable has type "str | Combinable")  [assignment]
     monkeypatch: true
     installed_apps:
         - myapp

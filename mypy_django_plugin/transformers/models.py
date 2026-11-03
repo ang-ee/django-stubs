@@ -36,11 +36,7 @@ from mypy_django_plugin.errorcodes import MANAGER_MISSING
 from mypy_django_plugin.exceptions import UnregisteredModelError
 from mypy_django_plugin.lib import fullnames, helpers
 from mypy_django_plugin.lib.fullnames import ANNOTATIONS_FULLNAME
-from mypy_django_plugin.transformers.fields import (
-    FieldDescriptorTypes,
-    get_field_descriptor_types,
-    reparametrize_related_field_type,
-)
+from mypy_django_plugin.transformers.fields import get_field_descriptor_types
 from mypy_django_plugin.transformers.managers import (
     MANAGER_METHODS_RETURNING_QUERYSET,
     create_manager_info_from_from_queryset_call,
@@ -426,10 +422,10 @@ class AddRelatedModelsId(ModelClassInitializer):
                 descriptor_types = get_field_descriptor_types(
                     relation_info, is_set_nullable=field.null, is_get_nullable=field.null
                 )
-                relation_type = reparametrize_related_field_type(
+                relation_type = helpers.reparametrize_related_field_type(
                     Instance(relation_info, list(descriptor_types)),
-                    set_type=Instance(parent_info, []),
-                    get_type=Instance(concrete_info, []),
+                    set_type=helpers.model_instance(parent_info),
+                    get_type=helpers.model_instance(concrete_info),
                 )
                 self.add_new_var_to_model_class(field.name, relation_type)
 
@@ -444,9 +440,8 @@ class AddRelatedModelsId(ModelClassInitializer):
                     raise exc
                 continue
 
-            is_nullable = self.django_context.get_field_nullability(field, None)
             set_type, get_type = get_field_descriptor_types(
-                field_info, is_set_nullable=is_nullable, is_get_nullable=is_nullable
+                field_info, is_set_nullable=field.null, is_get_nullable=field.null
             )
             self.add_new_var_to_model_class(field.attname, Instance(field_info, [set_type, get_type]))
 
@@ -489,7 +484,9 @@ class AddManagers(ModelClassInitializer):
         # access remains specialized to its explicit row.
         assert self.model_classdef.info.self_type is not None
         model_type = (
-            self.model_classdef.info.self_type if self.is_model_abstract else Instance(self.model_classdef.info, [])
+            self.model_classdef.info.self_type
+            if self.is_model_abstract
+            else helpers.model_instance(self.model_classdef.info)
         )
         manager_type = helpers.fill_manager(manager_info, model_type)
         self.add_new_var_to_model_class(manager_name, manager_type, is_classvar=True)
@@ -695,7 +692,7 @@ class AddReverseLookups(ModelClassInitializer):
                     attname,
                     Instance(
                         self.reverse_one_to_one_descriptor,
-                        [Instance(self.model_classdef.info, []), Instance(to_model_info, [])],
+                        [helpers.model_instance(self.model_classdef.info), helpers.model_instance(to_model_info)],
                     ),
                 )
             return
@@ -711,7 +708,8 @@ class AddReverseLookups(ModelClassInitializer):
                 self.add_new_var_to_model_class(
                     attname,
                     Instance(
-                        self.many_to_many_descriptor, [Instance(to_model_info, []), Instance(through_model_info, [])]
+                        self.many_to_many_descriptor,
+                        [helpers.model_instance(to_model_info), helpers.model_instance(through_model_info)],
                     ),
                     is_classvar=True,
                 )
@@ -719,7 +717,9 @@ class AddReverseLookups(ModelClassInitializer):
         if not reverse_lookup_declared:
             # ManyToOneRel
             self.add_new_var_to_model_class(
-                attname, Instance(self.reverse_many_to_one_descriptor, [Instance(to_model_info, [])]), is_classvar=True
+                attname,
+                Instance(self.reverse_many_to_one_descriptor, [helpers.model_instance(to_model_info)]),
+                is_classvar=True,
             )
 
         related_manager_info = self.lookup_typeinfo_or_incomplete_defn_error(fullnames.RELATED_MANAGER_CLASS)
@@ -749,7 +749,7 @@ class AddReverseLookups(ModelClassInitializer):
         default_manager_type = get_proper_type(default_manager.type)
         if isinstance(default_manager.node, Var) and default_manager_type is not None:
             default_manager_type = expand_self_type(
-                default_manager.node, default_manager_type, Instance(to_model_info, [])
+                default_manager.node, default_manager_type, helpers.model_instance(to_model_info)
             )
         if (
             # '_default_manager' attribute is a node type we can't process
@@ -765,7 +765,7 @@ class AddReverseLookups(ModelClassInitializer):
 
         # Create a reverse manager subclassed from the default manager of the related
         # model and 'RelatedManager'
-        related_manager = Instance(related_manager_info, [Instance(to_model_info, [])])
+        related_manager = Instance(related_manager_info, [helpers.model_instance(to_model_info)])
         # The reverse manager is based on the related model's manager, so it makes most sense to add the new
         # related manager in that module
         new_related_manager_info = helpers.add_new_class_for_module(
@@ -935,10 +935,10 @@ class ProcessManyToManyFields(ModelClassInitializer):
                     helpers.add_new_sym_for_info(
                         self.model_classdef.info,
                         name=m2m_field_name,
-                        sym_type=Instance(self.m2m_field, [args.to.model, Instance(through_model, [])]),
+                        sym_type=Instance(self.m2m_field, [args.to.model, helpers.model_instance(through_model)]),
                     )
                 # Create a 'ManyRelatedManager' class for the processed model
-                self.create_many_related_manager(Instance(self.model_classdef.info, []))
+                self.create_many_related_manager(helpers.model_instance(self.model_classdef.info))
                 if isinstance(args.to.model, Instance):
                     # Create a 'ManyRelatedManager' class for the related model
                     self.create_many_related_manager(args.to.model)
@@ -986,8 +986,9 @@ class ProcessManyToManyFields(ModelClassInitializer):
         return info
 
     @cached_property
-    def fk_field_types(self) -> FieldDescriptorTypes:
-        return get_field_descriptor_types(self.fk_field, is_set_nullable=False, is_get_nullable=False)
+    def fk_field_instance(self) -> Instance:
+        set_type, get_type = get_field_descriptor_types(self.fk_field, is_set_nullable=False, is_get_nullable=False)
+        return Instance(self.fk_field, [set_type, get_type])
 
     @cached_property
     def many_related_manager(self) -> TypeInfo:
@@ -1035,16 +1036,13 @@ class ProcessManyToManyFields(ModelClassInitializer):
         helpers.add_new_sym_for_info(through_model, name="id", sym_type=self.default_pk_instance.copy_modified())
         # Add the foreign key to the model containing the 'ManyToManyField' call:
         # <containing_model> or from_<model>
+        containing_model_type = helpers.model_instance(self.model_classdef.info)
         from_name = f"from_{self.model_classdef.name.lower()}" if m2m_args.to.self else self.model_classdef.name.lower()
         helpers.add_new_sym_for_info(
             through_model,
             name=from_name,
-            sym_type=Instance(
-                self.fk_field,
-                [
-                    helpers.convert_any_to_type(self.fk_field_types.set, Instance(self.model_classdef.info, [])),
-                    helpers.convert_any_to_type(self.fk_field_types.get, Instance(self.model_classdef.info, [])),
-                ],
+            sym_type=helpers.reparametrize_field_type(
+                self.fk_field_instance, set_type=containing_model_type, get_type=containing_model_type
             ),
         )
         # Add the foreign key's '_id' field: <containing_model>_id or from_<model>_id
@@ -1060,12 +1058,8 @@ class ProcessManyToManyFields(ModelClassInitializer):
         helpers.add_new_sym_for_info(
             through_model,
             name=to_name,
-            sym_type=Instance(
-                self.fk_field,
-                [
-                    helpers.convert_any_to_type(self.fk_field_types.set, m2m_args.to.model),
-                    helpers.convert_any_to_type(self.fk_field_types.get, m2m_args.to.model),
-                ],
+            sym_type=helpers.reparametrize_field_type(
+                self.fk_field_instance, set_type=m2m_args.to.model, get_type=m2m_args.to.model
             ),
         )
         # Add the foreign key's '_id' field: <other_model>_id or to_<model>_id
@@ -1218,7 +1212,7 @@ class MetaclassAdjustments(ModelClassInitializer):
                 helpers.add_new_sym_for_info(
                     ctx.cls.info,
                     name="objects",
-                    sym_type=Instance(manager, [Instance(ctx.cls.info, [])]),
+                    sym_type=Instance(manager, [helpers.model_instance(ctx.cls.info)]),
                 )
             return
 
@@ -1284,6 +1278,13 @@ class MetaclassAdjustments(ModelClassInitializer):
 
 
 def process_model_class(ctx: ClassDefContext, django_context: DjangoContext) -> None:
+    # A generic model whose type variable is bounded by a not yet analysed class (e.g. a forward
+    # reference) still has a `PlaceholderType` bound. Types built from it, such as the manager's
+    # `Self`, would keep that placeholder and fail to serialize, so wait for a later iteration.
+    if not ctx.api.final_iteration and any(has_placeholder(type_var) for type_var in ctx.cls.info.defn.type_vars):
+        ctx.api.defer()
+        return
+
     initializers = [
         AddAnnotateUtilities,
         InjectAnyAsBaseForNestedMeta,

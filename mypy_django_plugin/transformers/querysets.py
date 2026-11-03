@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 from django.core.exceptions import FieldDoesNotExist, FieldError
 from django.db.models.constants import LOOKUP_SEP
@@ -44,7 +44,7 @@ from mypy.types import (
 from mypy.types import Type as MypyType
 from mypy.types_utils import remove_optional
 
-from mypy_django_plugin.django.context import DjangoContext, LookupsAreUnsupported, get_field_type_from_model_type_info
+from mypy_django_plugin.django.context import DjangoContext, LookupsAreUnsupported
 from mypy_django_plugin.lib import fullnames, helpers
 from mypy_django_plugin.lib.field_validation import (
     check_field_concrete,
@@ -97,7 +97,6 @@ def get_field_type_from_lookup(
     django_context: DjangoContext,
     model_cls: type[Model],
     *,
-    method: str,
     lookup: str,
     silent_on_error: bool = False,
 ) -> MypyType | None:
@@ -108,13 +107,15 @@ def get_field_type_from_lookup(
         # Only its FK attname has the same lookup and projection PK contract.
         if model_cls._meta.abstract and lookup.endswith("_id") and LOOKUP_SEP not in lookup:
             model_info = django_context.lookup_model_typeinfo(helpers.get_typechecker_api(ctx), model_cls)
-            field_type = get_field_type_from_model_type_info(model_info, lookup[:-3])
+            field_type = helpers.get_field_type_from_model_type_info(model_info, lookup[:-3])
             if (
                 model_info is not None
                 and field_type is not None
                 and field_type.type.has_base(fullnames.FOREIGN_KEY_FULLNAME)
             ):
-                result = django_context._resolve_declared_field_lookup(ctx, model_cls, lookup, Instance(model_info, []))
+                result = django_context._resolve_declared_field_lookup(
+                    ctx, model_cls, lookup, helpers.model_instance(model_info)
+                )
                 if result is not None:
                     mapped = helpers.get_field_type_args(field_type)
                     if mapped is not None and helpers.is_optional(mapped.get):
@@ -128,15 +129,13 @@ def get_field_type_from_lookup(
 
     if lookup_field is None:
         return AnyType(TypeOfAny.implementation_artifact)
-    if (isinstance(lookup_field, RelatedField) and lookup_field.column == lookup) or isinstance(
-        lookup_field, ForeignObjectRel
-    ):
+    if isinstance(lookup_field, RelatedField | ForeignObjectRel):
         model_cls = django_context.get_field_related_model_cls(lookup_field)
         lookup_field = django_context.get_primary_key_field(model_cls)
 
     api = helpers.get_typechecker_api(ctx)
     model_info = django_context.lookup_model_typeinfo(api, model_cls)
-    return django_context.get_field_get_type(api, model_info, lookup_field, method=method)
+    return helpers.get_field_get_type(api, ctx.context, model_info, lookup_field.attname)
 
 
 def get_values_list_row_type(
@@ -157,17 +156,13 @@ def get_values_list_row_type(
     if len(field_lookups) == 0:
         if flat:
             primary_key_field = django_context.get_primary_key_field(model_cls)
-            lookup_type = get_field_type_from_lookup(
-                ctx, django_context, model_cls, lookup=primary_key_field.attname, method="values_list"
-            )
+            lookup_type = get_field_type_from_lookup(ctx, django_context, model_cls, lookup=primary_key_field.attname)
             assert lookup_type is not None
             return lookup_type
         if named:
             column_types: dict[str, MypyType] = {}
             for field in django_context.get_model_fields(model_cls):
-                column_type = django_context.get_field_get_type(
-                    typechecker_api, model_info, field, method="values_list"
-                )
+                column_type = helpers.get_field_get_type(typechecker_api, ctx.context, model_info, field.attname)
                 column_types[field.attname] = column_type
             column_types.update(annotation_types)
             return helpers.make_oneoff_named_tuple(typechecker_api, "Row", column_types)
@@ -193,7 +188,6 @@ def get_values_list_row_type(
             django_context,
             model_cls,
             lookup=field_lookup,
-            method="values_list",
             silent_on_error=bool(annotation_types),
         )
         if lookup_field_type is None:
@@ -603,7 +597,6 @@ def extract_proper_type_queryset_values(ctx: MethodContext, django_context: Djan
             django_context,
             django_model.cls,
             lookup=field_lookup,
-            method="values",
             silent_on_error=django_model.is_annotated,
         )
         if field_lookup_type is None:
@@ -752,6 +745,18 @@ def _get_selected_fields_from_queryset_type(qs_type: Instance) -> set[str] | Non
     return None
 
 
+_DISTINCT_FIELD_ATTR_PREFIX: Final = "__distinct_field__:"
+_DISTINCT_FIELD_UNKNOWN_ATTR: Final = f"{_DISTINCT_FIELD_ATTR_PREFIX}*"
+
+
+def _is_distinct_on_field(qs_type: Instance, field_name: str) -> bool:
+    # mirrors Django's in_bulk() carve-out: self.query.distinct_fields != (field_name,)
+    if not qs_type.extra_attrs:
+        return False
+    attrs = qs_type.extra_attrs.attrs
+    return _DISTINCT_FIELD_UNKNOWN_ATTR in attrs or f"{_DISTINCT_FIELD_ATTR_PREFIX}{field_name}" in attrs
+
+
 def _get_annotated_fields_from_queryset_type(qs_type: Instance) -> set[str]:
     """
     Derive annotated field names from a QuerySet type.
@@ -849,7 +854,7 @@ def check_valid_prefetch_related_lookup(
             and current_model_cls._meta.abstract
         ):
             model_info = django_context.lookup_model_typeinfo(helpers.get_typechecker_api(ctx), current_model_cls)
-            field_type = get_field_type_from_model_type_info(model_info, through_attr)
+            field_type = helpers.get_field_type_from_model_type_info(model_info, through_attr)
             if field_type is not None and field_type.type.has_base(fullnames.FOREIGN_KEY_FULLNAME):
                 mapped = helpers.get_field_type_args(field_type)
                 assert mapped is not None
@@ -876,9 +881,7 @@ def check_valid_prefetch_related_lookup(
             try:
                 from django.contrib.contenttypes.fields import GenericForeignKeyDescriptor
             except ImportError:  # Django < 6.1
-                from django.contrib.contenttypes.fields import (  # type: ignore[assignment]
-                    GenericForeignKey as GenericForeignKeyDescriptor,
-                )
+                from django.contrib.contenttypes.fields import GenericForeignKey as GenericForeignKeyDescriptor  # type: ignore[assignment]
 
             if not isinstance(rel_obj_descriptor, GenericForeignKeyDescriptor):
                 # If current_model_cls is "self", we cannot use `__name__` and want "self".
@@ -910,9 +913,7 @@ def check_valid_prefetch_related_lookup(
                 try:
                     from django.contrib.contenttypes.fields import GenericForeignKeyDescriptor
                 except ImportError:  # Django < 6.1
-                    from django.contrib.contenttypes.fields import (  # type: ignore[assignment]
-                        GenericForeignKey as GenericForeignKeyDescriptor,
-                    )
+                    from django.contrib.contenttypes.fields import GenericForeignKey as GenericForeignKeyDescriptor  # type: ignore[assignment]
 
                 if isinstance(rel_obj_descriptor, GenericForeignKeyDescriptor):
                     # Generic foreign keys can point to any model, so we use Model as the base type
@@ -997,7 +998,7 @@ def extract_prefetch_related_annotations(ctx: MethodContext, django_context: Dja
             try:
                 observed_model_cls = django_context.resolve_lookup_into_field(qs_model.cls, lookup)[1]
                 if model_info := django_context.lookup_model_typeinfo(api, observed_model_cls):
-                    elem_model = Instance(model_info, [])
+                    elem_model = helpers.model_instance(model_info)
             except (FieldError, LookupsAreUnsupported):
                 pass
 
@@ -1284,7 +1285,10 @@ def validate_distinct(ctx: MethodContext, django_context: DjangoContext) -> Mypy
     selected_fields = _get_selected_fields_from_queryset_type(ctx.type) if isinstance(ctx.type, Instance) else None
     annotated_fields = _get_annotated_fields_from_queryset_type(ctx.type) if isinstance(ctx.type, Instance) else set()
 
-    for lookup_value in _extract_field_names_from_varargs(ctx):
+    raw_arg_types = ctx.arg_types[0] if ctx.arg_types and ctx.arg_types[0] else []
+    raw_arg_count = len(raw_arg_types)
+    field_lookups = _extract_field_names_from_varargs(ctx)
+    for lookup_value in field_lookups:
         parts = lookup_value.split(LOOKUP_SEP)
         if parts[0] in annotated_fields:
             # Skip validation for annotated fields
@@ -1293,6 +1297,22 @@ def validate_distinct(ctx: MethodContext, django_context: DjangoContext) -> Mypy
             # Skip validation for fields selected via values()/values_list()
             continue
         _validate_lookup(ctx, django_model.cls, parts)
+
+    # Replaces any earlier tag - Django replaces distinct_fields on each call, doesn't accumulate.
+    default_return_type = get_proper_type(ctx.default_return_type)
+    if isinstance(default_return_type, Instance):
+        existing = default_return_type.extra_attrs
+        new_attrs: dict[str, MypyType] | None = None
+        if raw_arg_count == 1 and len(field_lookups) == 1 and LOOKUP_SEP not in field_lookups[0]:
+            new_attrs = {f"{_DISTINCT_FIELD_ATTR_PREFIX}{field_lookups[0]}": AnyType(TypeOfAny.implementation_artifact)}
+        elif raw_arg_count == 1 and not field_lookups and isinstance(get_proper_type(raw_arg_types[0]), AnyType):
+            # Any could be the field being checked - don't flag errors hinging on an unknowable value.
+            new_attrs = {_DISTINCT_FIELD_UNKNOWN_ATTR: AnyType(TypeOfAny.implementation_artifact)}
+        updated = helpers.merge_extra_attrs(existing, new_attrs=new_attrs, drop_prefix=_DISTINCT_FIELD_ATTR_PREFIX)
+        if existing is None or updated.attrs != existing.attrs:
+            tagged = default_return_type.copy_modified()
+            tagged.extra_attrs = updated
+            return tagged
 
     return ctx.default_return_type
 
@@ -1333,6 +1353,7 @@ def validate_in_bulk(ctx: MethodContext, django_context: DjangoContext) -> MypyT
     ):
         return ctx.default_return_type
 
-    check_field_unique(ctx, django_model.cls, field, field_name, method="in_bulk")
+    if not (isinstance(ctx.type, Instance) and _is_distinct_on_field(ctx.type, field_name)):
+        check_field_unique(ctx, django_model.cls, field, field_name, method="in_bulk")
 
     return ctx.default_return_type
