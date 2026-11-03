@@ -7,6 +7,13 @@ extra to obtain the matching `angee-mypy` and `angee-django-stubs-ext` releases.
 The native `mypy_django_plugin` and `django_stubs_ext` imports are unchanged.
 Use a clean environment without the upstream `mypy`, `django-stubs`, or
 `django-stubs-ext` distributions, which provide the same files.
+Version `6.1.2.post4` follows upstream master's descriptor-based field reads
+(setters accept `Combinable`, generic models referenced by the plugin take `Any`
+type arguments, foreign-key `_id` attributes with a default are not optional) and
+lets a queryset's own method declarations keep their signatures on managers built
+with `as_manager()` or `from_queryset()`; `BaseManager`'s methods keep Django's
+precedence and authored manager overrides still win.
+
 Version `6.1.2.post3` shares related-model type resolution across authored fields,
 constructor checks and runtime model integrations, including proxy relations.
 It retains independent queryset types in heterogeneous `Prefetch` calls and
