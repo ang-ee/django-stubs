@@ -49,22 +49,25 @@
         from typing import reveal_type
         from myapp.models import Author
 
-        reveal_type(Author[int]().article_set.all())  # N: Revealed type is "django.db.models.query.QuerySet[myapp.models.Article[Any], myapp.models.Article[Any]]"
+        reveal_type(Author().article_set.published())  # N: Revealed type is "django.db.models.query.QuerySet[myapp.models.Article[Any], myapp.models.Article[Any]]"
     installed_apps:
         - myapp
     files:
         -   path: myapp/__init__.py
         -   path: myapp/models.py
             content: |
-                from typing import Any, Generic, TypeVar
+                from typing import Generic, TypeVar
                 from django.db import models
 
                 T = TypeVar("T")
+                M = TypeVar("M", bound=models.Model)
 
-                class Author(models.Model, Generic[T]): ...
+                class Author(models.Model): ...
 
-                class ArticleManager(models.Manager["Article[Any]"]): ...
+                class ArticleManager(models.Manager[M]):
+                    def published(self) -> models.QuerySet[M]:
+                        return self.get_queryset()
 
                 class Article(models.Model, Generic[T]):
                     author = models.ForeignKey(Author, on_delete=models.CASCADE)
-                    objects = ArticleManager()
+                    objects = ArticleManager["Article[T]"]()

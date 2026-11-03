@@ -400,8 +400,12 @@ def populate_manager_from_queryset(
             # private, magic methods are not copied
             # https://github.com/django/django/blob/5.0.4/django/db/models/manager.py#L101
             owner = _get_manager_method_owner(manager_info, name, runtime_manager)
+            # Manager's queryset copies yield to the queryset's declarations;
+            # BaseManager's own methods keep Django's precedence.
             if name.startswith("_") or (
-                owner is not None and "from_queryset_manager" not in owner.metadata.get("django", {})
+                owner is not None
+                and owner.fullname != fullnames.MANAGER_CLASS_FULLNAME
+                and "from_queryset_manager" not in owner.metadata.get("django", {})
             ):
                 continue
             # Insert the queryset method name as a class member. Note that the type of

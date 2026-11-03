@@ -107,7 +107,14 @@
         # Kwargs declared explicitly by an `update()` override are consumed by
         # the override; only ones destined for `**kwargs` are model fields.
         Article.objects.update(title="new title", author_name="foo")
+        Article.objects.update(author_name=1)  # E: Argument "author_name" to "update" of "ArticleQuerySet" has incompatible type "int"; expected "str | None"  [arg-type]
         Article.objects.update(nonexistent=1, author_name="foo")  # E: Article has no field named 'nonexistent'  [misc]
+        Article.objects.count(include_archived=True)
+        Article.objects.count(include_archived="yes")  # E: Argument "include_archived" to "count" of "ArticleQuerySet" has incompatible type "str"; expected "bool"  [arg-type]
+
+        Article.plain.all().update(author_name=1)
+        Article.plain.all().update(author_name="x")  # E: Argument "author_name" to "update" of "PlainQuerySet" has incompatible type "str"; expected "int | None"  [arg-type]
+        Article.plain.update(author_name="x")  # E: Argument "author_name" to "update" of "PlainQuerySet" has incompatible type "str"; expected "int | None"  [arg-type]
     files:
         -   path: myapp/__init__.py
         -   path: myapp/models.py
@@ -122,6 +129,45 @@
                     def update(self, *, author_name: str | None = None, **kwargs: Any) -> int:
                         return super().update(**kwargs)
 
+                    @override
+                    def count(self, *, include_archived: bool = False) -> int:
+                        return super().count()
+
+                class PlainQuerySet(models.QuerySet["Article"]):
+                    @override
+                    def update(self, *, author_name: int | None = None, **kwargs: Any) -> int:
+                        return super().update(**kwargs)
+
                 class Article(models.Model):
                     title = models.CharField(max_length=200)
+                    objects = ArticleQuerySet.as_manager()
+                    plain = PlainQuerySet.as_manager()
+
+-   case: queryset_method_does_not_replace_base_manager_method
+    installed_apps:
+        - myapp
+    main: |
+        from typing import reveal_type
+        from myapp.models import Article
+
+        reveal_type(Article.objects.check)  # N: Revealed type is "def (**kwargs: Any) -> list[django.core.checks.messages.CheckMessage]"
+        reveal_type(Article.objects.update)  # N: Revealed type is "def (*, author_name: str | None =, **kwargs: Any) -> int"
+    files:
+        -   path: myapp/__init__.py
+        -   path: myapp/models.py
+            content: |
+                from typing import Any
+
+                from django.db import models
+                from typing_extensions import override
+
+                class ArticleQuerySet(models.QuerySet["Article"]):
+                    def check(self) -> int:
+                        return 0
+
+                    @override
+                    def update(self, *, author_name: str | None = None, **kwargs: Any) -> int:
+                        return super().update(**kwargs)
+
+                class Article(models.Model):
                     objects = ArticleQuerySet.as_manager()
